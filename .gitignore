@@ -1,0 +1,32 @@
+# Local R state and private environment configuration
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.Renviron
+.env
+.env.*
+!.env.example
+
+# Sequencing data and indexes must stay outside version control
+*.[bB][aA][mM]
+*.[bB][aA][iI]
+*.[cC][sS][iI]
+*.[sS][aA][mM]
+*.[cC][rR][aA][mM]
+*.[cC][rR][aA][iI]
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+/data/*
+!/data/README.txt
+
+# Analysis output, logs, and local caches
+/results/
+/outputs/
+/logs/
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
