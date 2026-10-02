@@ -11,7 +11,7 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
    git clone https://github.com/Luckyfruit88/Reg_R-shiny.git
    ```
 
-   仓库保持私有，请使用自己已有的 GitHub 认证。GitHub 仓库权限和 SCC 数据权限是两回事。
+   如 GitHub 要求认证，请使用自己已有权限的账号。GitHub 代码访问和 SCC 数据权限是两回事。
 3. 通过 RStudio **File → Open Project** 打开 clone 中的 `Reg_R-shiny.Rproj`。仅在 Terminal 中 `cd` 不会改变 R Console 的工作目录。
 4. 在 **R Console** 执行：
 

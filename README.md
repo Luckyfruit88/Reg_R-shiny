@@ -13,7 +13,7 @@ Reg_Shiny compares RNA-seq splice evidence by DNA genotype at a selected WGS var
    git clone https://github.com/Luckyfruit88/Reg_R-shiny.git
    ```
 
-   This repository remains private; GitHub authentication and access are separate from SCC group permissions.
+   If GitHub requests authentication, use your existing authorized account. Repository access and SCC data-group permissions are separate.
 3. In RStudio, use **File → Open Project** to open the cloned `Reg_R-shiny.Rproj`. This sets the R Console's working directory correctly; a Terminal `cd` alone does not change it.
 4. In the R Console, run:
 
