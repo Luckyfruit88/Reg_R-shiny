@@ -39,17 +39,21 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 输入 `CHROM:POS` 或 `CHROM:POS:REF:ALT`，选择对应记录后运行 **All matched BAMs**。界面报告实际配置、选中、成功和失败样本数（FHS 对应唯一参与者）；不存在的 genotype 不会补造，缺失 genotype 不是 0/0。
 
+批量查询时，在 **Batch variants** 中每行输入一个坐标，然后点击 **Submit independent 16-core jobs**。当前窗口大小和过滤条件分别围绕每个 variant 冻结。查询与提交在后台处理，已提交的任务可在后续条目准备时开始计算。每条输入都有独立的提交结果或失败原因；同一坐标有多个 REF/ALT 时，需要改用明确的 `CHROM:POS:REF:ALT`。在任务列表中打开某个任务，即可查看它自己的结果和日志。
+
 **RNA allele evidence** 保留 RNA 碱基计数表，并按 genotype 显示逐碱基平均覆盖度、参考序列、GT/AG 改变和实测 junction 支持。不同 genotype 共用刻度；测量为 0 与不可用 NA 分开。GENCODE 页显示参考 transcript/exon/CDS/UTR 和精确 junction 注释。上述结果用于检查剪接证据，不单独证明因果，也不是正式 PSI 或关联检验。
 
 全量比较作为独立 SCC 作业运行，关闭浏览器不会停止。回到相同的 prepared dataset，可在保存的作业列表中打开或恢复。原始 BAM/VCF 只读，不自动重建源索引。
 
 ## 每位成员的文件与权限
 
-代码目录下 `.reg_shiny/uid-<uid>/` 保存本用户的私有配置、清单、GENCODE 索引与作业结果，均被 Git 排除。每个数据集有自己的作业存储；同一存储一次允许一个全量任务。不同 profile/clone 可以有各自任务，使用者需管理总资源占用。
+代码目录下 `.reg_shiny/uid-<uid>/` 保存本用户的私有配置、清单、GENCODE 索引与作业结果，均被 Git 排除。每个数据集有自己的作业存储，同一数据集可同时运行多个 variant 任务。每个任务独立保存准确的 VCF 记录、genotype/BAM 匹配、参数、代码快照、检查点、进度、日志与结果；某个任务失败不会停止其他任务。
 
 默认 FHS 源数据需要已有 `mtdna-alcohol` 和 `sequencing` 权限。clone 代码不会新增数据权限。不要使用他人的私有 `.git`、缓存、用户作业目录或 OnDemand rnode 链接。
 
-默认全量任务为 8 核、4 GB/核、12 小时上限。需要更换计费项目或资源时，在启动前设置 `REGSHINY_SGE_PROJECT`、`REGSHINY_FULL_CORES`、`REGSHINY_FULL_WALLTIME`。交互界面按 RStudio 核数使用 1–2 个后台 worker。
+每个新全量任务独立申请 **16 核**（15 个 RNA worker 和 1 个协调进程）、4 GB/核，默认 12 小时上限。例如，3 个 variant 同时运行会占用 **48 核**，不会共享一份 16 核。实际并行启动时间取决于 SCC 排队和资源可用性；增加核数不保证耗时减半。
+
+计费项目与时限可在启动前设置 `REGSHINY_SGE_PROJECT`、`REGSHINY_FULL_WALLTIME`。旧的 `REGSHINY_FULL_CORES` 不再改变新任务的 16 核配置；历史任务恢复时保留其冻结的原资源配置。交互界面仍按 RStudio 核数使用 1–2 个后台 worker，不承担全量计算。
 
 更新时先停止 app，在本 clone 的 Terminal 中执行 `git pull --ff-only`，然后重新启动。更新不会主动删除私有缓存和作业；重连时仍检查源文件身份。
 

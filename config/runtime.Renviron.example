@@ -4,7 +4,7 @@
 OMP_NUM_THREADS=1
 OPENBLAS_NUM_THREADS=1
 REGSHINY_SGE_PROJECT=mtdna-alcohol
-REGSHINY_FULL_CORES=8
+# Each new full variant job requests 16 cores independently.
 REGSHINY_FULL_WALLTIME=12:00:00
 # Optional custom initial dataset, kept outside Git:
 # REGSHINY_PROFILE_CONFIG=/absolute/path/to/my-profile.json

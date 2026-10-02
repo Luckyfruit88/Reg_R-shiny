@@ -35,13 +35,19 @@ Default FHS access requires existing **mtdna-alcohol** and **sequencing** author
 - Search `CHROM:POS` or `CHROM:POS:REF:ALT`, select the exact VCF record and compare genotypes. **All matched BAMs** is the default. Optional preview is labelled and limited only when explicitly selected. A missing genotype is not invented or treated as reference homozygous.
 - Inspect depth, exact junction support, GENCODE transcript/exon/CDS/UTR models and the base-resolution **RNA allele evidence** view. The latter keeps the RNA base table and aligns genotype mean coverage with reference sequence and GT/AG changes. Raw counts and genotype differences are descriptive evidence, not formal PSI or causal inference.
 
+To run several variants, enter one `CHROM:POS` or exact `CHROM:POS:REF:ALT` per line under **Batch variants**, then click **Submit independent 16-core jobs**. The current interval/filter settings are frozen separately around each variant. Lookup and submission run in the background; submitted jobs can overlap while later lines are prepared. The outcome table reports each accepted job or lookup/preparation failure. An ambiguous position requires an exact REF/ALT query; it is never silently assigned an allele. Open an individual job to inspect its own result and logs.
+
 VCF may be left blank for **Single BAM / demo** use. Optional FASTA/GENCODE inputs are configurable. GENCODE v48 and the current splice-motif reference overlay require compatible GRCh38 inputs; other declared assemblies can still use their compatible BAM/VCF counting views without a false GRCh38 overlay.
 
 ## Private state and full-cohort jobs
 
 Each clone creates `.reg_shiny/uid-<uid>/` with private profile directories. These hold source manifests, source identities, annotation indexes and results and are excluded from Git. Original sequencing files stay in their original authorized locations. A profile is bound to its source identity; source changes require preparing the connection again.
 
-Full comparisons submit a separate SCC job, stream per-sample contributions and save checkpoints. Closing the browser does not cancel that job. Reopen or resume it from the same prepared dataset's saved-job list. Each dataset's job store admits one active full comparison; separate profiles/clones are separate stores, so users must account for their total active jobs. Defaults are 8 cores, 4 GB/core and a 12-hour walltime. In the R Console, before starting the app, you can set `REGSHINY_SGE_PROJECT`, `REGSHINY_FULL_CORES` and `REGSHINY_FULL_WALLTIME` for your authorized allocation.
+Each new full comparison submits its own SCC job with **16 cores** (15 RNA workers plus a coordinator), 4 GB/core and a 12-hour walltime. Multiple variants can run concurrently in the same dataset. Three running variants therefore reserve **48 cores**, not a shared 16-core pool. SCC may queue jobs until resources are available; doubling the allocation does not guarantee twice the speed.
+
+Each variant independently freezes its exact VCF record, genotype/BAM matches, analysis settings and source snapshot, and owns its checkpoints, progress, logs and result. A failed variant does not stop the other jobs. Closing the browser does not cancel submitted jobs. Reopen or resume an individual job from the same prepared dataset's saved-job list. Historical jobs retain their frozen resources when resumed.
+
+Before starting the app, you may set `REGSHINY_SGE_PROJECT` and `REGSHINY_FULL_WALLTIME` for your authorized allocation. New full jobs always request 16 cores; the legacy `REGSHINY_FULL_CORES` setting no longer controls their allocation.
 
 The interactive session uses two background workers when `NSLOTS >= 3`, otherwise one, while the main process handles the UI. `REGSHINY_UI_WORKERS` may reduce this within the detected budget. Thread limits set after RStudio has started cannot retroactively reconfigure already initialized numeric libraries.
 

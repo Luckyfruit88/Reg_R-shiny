@@ -24,6 +24,7 @@ Rscript tests/test_variants.R
 Rscript tests/test_rna_bases.R
 Rscript tests/test_all_samples.R --native
 Rscript tests/test_variant_jobs.R
+Rscript tests/test_parallel_variant_jobs.R
 Rscript tests/test_annotations.R
 Rscript tests/test_splice_evidence.R --native
 Rscript tests/test_data_sources.R --native
@@ -47,6 +48,8 @@ Run any runtime/launcher-specific tests listed in `tests/` alongside these suite
 A release check should use a fresh clone/checkout in an independent writable path, clear personal `REGSHINY_*` deployment overrides, then prepare FHS from its original CSV and VCF/BAM sources. Validate a real coordinate lookup and bounded RNA preview, and also connect custom BAM/VCF data through explicit and read-group sample matching. Confirm that genotype groups, read-depth units, known-zero/missing states and data-source identity remain correct.
 
 For scheduler runs, success requires a matching application receipt, artifact/source checks and terminal `qacct` with both `failed=0` and `exit_status=0`. Queue disappearance is not sufficient. Browser verification should use a real SCC RStudio session, check default FHS and a custom source, and save screenshots outside tracked source.
+
+For parallel-job changes, submit at least three distinct exact variants from one prepared dataset. Verify separate scheduler job IDs and directories, `slots=16` in each terminal accounting record, and `allocated_slots=16` / `workers=15` in each result. Compare each result and selected sample count with its own frozen request. Check scheduler start/end times to distinguish observed overlap from merely submitting multiple queued jobs. Exercise invalid or ambiguous batch lines without cancelling valid lines, and verify that changing inputs or opening another job cannot relabel a result. A failed or interrupted job must not block unrelated submissions; resuming the same job still requires terminal accounting and an exclusive per-job lock.
 
 Private run-specific receipts, manifests, data and screenshots belong in the user's validation/state location. Do not commit them or label a current checkout verified based only on an unrelated historical `validation_status.json` or stale checksum file.
 

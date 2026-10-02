@@ -1,5 +1,68 @@
 # Variant-centered interface inside Reg_Shiny. Preview workers share the app's
 # future pool. Full comparisons use persistent SCC jobs and survive disconnects.
+
+# Resolve each requested record independently, then issue a separate persistent
+# job submission. This orchestrates metadata work only, never a shared RNA job.
+variant_batch_submit <- function(api, resources, lines, settings, source_identity,
+                                 backend_file, variant_file, job_source, job_root, controls) {
+  outcomes <- list(); submitted_records <- character()
+  for (i in seq_len(nrow(lines))) {
+    row <- list(input_line = lines$input_line[[i]], query = lines$query[[i]], record_id = NA_character_,
+      outcome = "LOOKUP_FAILED", job_id = NA_character_, job_dir = NA_character_, requested_cores = NA_integer_,
+      candidates = "", message = "")
+    records <- tryCatch(api$lookup_variants(resources, row$query), error = function(e) e)
+    if (inherits(records, "error")) row$message <- conditionMessage(records) else if (!nrow(records)) {
+      row$outcome <- "NOT_FOUND"; row$message <- "No exact VCF record; a reference genotype is not inferred."
+    } else if (nrow(records) != 1L) {
+      row$outcome <- "AMBIGUOUS_ALLELES"
+      row$candidates <- paste(paste(records$chrom, records$pos1, records$ref, records$alt, sep = ":"), collapse = "; ")
+      row$message <- "No job submitted. Specify one exact CHROM:POS:REF:ALT record."
+    } else {
+      variant <- records
+      row$record_id <- as.character(variant$record_id[[1L]])
+      if (row$record_id %in% submitted_records) {
+        row$outcome <- "DUPLICATE_IN_BATCH"
+        row$message <- "This exact record was already attempted in this batch; no duplicate submission."
+      } else {
+        # Mark attempted even when qsub is uncertain: never automatically retry
+        # a possibly accepted submission later in the same batch.
+        submitted_records <- c(submitted_records, row$record_id)
+        attempt <- tryCatch({
+          cfg <- settings
+          flank <- cfg$flank; cfg$flank <- NULL
+          cfg$chrom <- variant$chrom[[1L]]
+          cfg$start1 <- max(1, variant$pos1[[1L]] - flank)
+          cfg$end1 <- variant$pos1[[1L]] + flank
+          if ("contig_length" %in% names(variant) && is.finite(variant$contig_length[[1L]]))
+            cfg$end1 <- min(cfg$end1, variant$contig_length[[1L]])
+          cfg <- api$validate_config(cfg)
+          if (!is.null(source_identity)) {
+            cfg$data_source_id <- source_identity$id; cfg$data_source_label <- source_identity$label
+          }
+          frozen <- controls
+          frozen$query <- row$query; frozen$record_id <- row$record_id; frozen$sampling_mode <- "all"
+          frozen$sample_cap <- NULL; frozen$batch_input_line <- row$input_line
+          api$submit_variant_job(resources, variant, cfg, backend_file = backend_file,
+            variant_file = variant_file, job_source = job_source, job_root = job_root, ui_controls = frozen)
+        }, error = function(e) e)
+        if (inherits(attempt, "error")) {
+          row$outcome <- "SUBMISSION_FAILED"
+          row$message <- conditionMessage(attempt)
+          if (length(attempt$job_dir) == 1L) row$job_dir <- as.character(attempt$job_dir)
+          if (length(attempt$job_id) == 1L) row$job_id <- as.character(attempt$job_id)
+          if (length(attempt$status) == 1L) row$outcome <- as.character(attempt$status)
+        } else {
+          row$outcome <- "SUBMITTED"; row$job_id <- as.character(attempt$job_id)
+          row$job_dir <- as.character(attempt$job_dir); row$requested_cores <- 16L
+          row$message <- "Independent full-cohort job submitted; inspect its own status and logs."
+        }
+      }
+    }
+    outcomes[[i]] <- as.data.frame(row, stringsAsFactors = FALSE)
+  }
+  do.call(rbind, outcomes)
+}
+
 variant_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::layout_sidebar(
@@ -32,21 +95,30 @@ variant_ui <- function(id) {
         checkboxInput(ns("nh1"), "Require NH == 1 (exclude missing NH)", FALSE),
         helpText("Always exclude unmapped, secondary, supplementary and QC-failed alignments. Paired ends count separately.")),
       bslib::input_task_button(ns("run"), "Compare genotypes"),
+      conditionalPanel(sprintf("input['%s'] === 'all'", ns("sampling_mode")),
+        hr(), h5("3 · Independent variant jobs"),
+        textAreaInput(ns("batch_queries"), "Batch variants (one per line)", rows = 5,
+          placeholder = "chr21:14288395:G:A\nchr17:3156517:T:C"),
+        bslib::input_task_button(ns("batch_submit"), "Submit independent 16-core jobs",
+          onclick = "window.scrollTo({top: 0, behavior: 'smooth'});"),
+        helpText("Use CHROM:POS or CHROM:POS:REF:ALT. Ambiguous positions require explicit alleles. Each resolved variant receives its own 16-core allocation, matching, logs and results; the 16 cores are not shared between variants. Current interval/filter settings are frozen for each submission.")),
       hr(),
       h5("Saved full-comparison jobs"),
       selectInput(ns("saved_job"), "Your recent jobs", choices = character()),
       actionButton(ns("refresh_jobs"), "Refresh jobs"),
       actionButton(ns("open_job"), "Open saved job"),
-      actionButton(ns("resume_job"), "Resume interrupted job"),
+      bslib::input_task_button(ns("resume_job"), "Resume interrupted job"),
       helpText("Opening displays the job's submitted variant and parameters. Resume reuses verified sample checkpoints; completed results remain available. Search again to submit a new comparison."),
       hr(),
       helpText("DNA GT defines each group. Missing and partial calls remain in the audit and are excluded from RNA comparison. RNA coverage and junctions are descriptive evidence, not a formal splicing association test.")
     ),
     uiOutput(ns("lookup_status")),
+    uiOutput(ns("submission_status")),
+    uiOutput(ns("resume_status")),
     uiOutput(ns("job_progress")),
     uiOutput(ns("status")),
     uiOutput(ns("selected_variant")),
-    bslib::navset_card_tab(
+    bslib::navset_card_tab(id = ns("result_tabs"),
       bslib::nav_panel("Genotype comparison",
         h5("Observed genotype groups and sample accounting"),
         DT::DTOutput(ns("groups")),
@@ -55,6 +127,13 @@ variant_ui <- function(id) {
         bslib::card(bslib::card_header("Junction support by genotype · top 20 per group"), uiOutput(ns("junction_chart"))),
         annotation_track_ui(ns("annotation")),
         p("Depth includes zero-coverage positions. Junction means include successful samples with zero support; failed samples are excluded and shown above. These raw counts are not normalized for library size. Arcs are not transcript annotations.")),
+      bslib::nav_panel("Jobs",
+        h5("Independent full-cohort jobs"),
+        p("Every new full job requests 16 cores. Several jobs may run concurrently when the scheduler allocates their separate resources. Select a row and open that job's frozen result."),
+        DT::DTOutput(ns("jobs_table")), actionButton(ns("open_dashboard_job"), "Open selected job"),
+        h5("Latest batch outcomes"), uiOutput(ns("batch_status")), DT::DTOutput(ns("batch_outcomes")),
+        downloadButton(ns("download_batch"), "Batch outcomes CSV"),
+        helpText("Partial failures are retained per input line. Resolve ambiguous alleles before resubmitting only those lines. Inspect an uncertain submission's own receipt before retrying; successful jobs are never rolled back.")),
       bslib::nav_panel("Junctions", DT::DTOutput(ns("junctions")),
         p("Intron boundaries are 1-based and inclusive. count_sum is total retained alignment support; count_mean is support per successful RNA sample under the submitted sample scope.")),
       bslib::nav_panel("GENCODE v48", annotation_detail_ui(ns("annotation"))),
@@ -77,7 +156,7 @@ variant_ui <- function(id) {
         downloadButton(ns("download_samples"), "Sample audit CSV"),
         downloadButton(ns("download_genotypes"), "DNA calls CSV"),
         downloadButton(ns("download_audit"), "Parameters / provenance JSON"),
-        hr(), verbatimTextOutput(ns("audit")),
+        hr(), uiOutput(ns("job_files")), verbatimTextOutput(ns("audit")),
         p("Exports include controlled sample metadata. Use them within the project's authorized data environment.")),
       bslib::nav_panel("Scope",
         p("This extends Reg_Shiny from a fixed candidate list to indexed WGS VCF coordinate lookup with explicitly matched RNA BAMs. Only records present in the configured VCFs can be found. No record found does not establish a reference genotype or absence of variation."),
@@ -185,6 +264,10 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     full_result <- reactiveVal(NULL)
     full_result_error <- reactiveVal(NULL)
     loaded_job <- reactiveVal(NULL)
+    view_revision <- reactiveVal(0L)
+    single_revision <- reactiveVal(0L)
+    single_submission <- reactiveVal(NULL)
+    single_receipt <- reactiveVal(NULL)
     observeEvent(is_active(), {
       if (!isTRUE(is_active())) {
         # Release loaded full results and stop polling; the scheduler job itself
@@ -193,6 +276,58 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       }
     })
     results_stale <- reactive(!identical(controls(), launched_controls()))
+    single_submit_task <- shiny::ExtendedTask$new(function(res, variant, cfg, frozen_controls,
+      source_file, variant_source, jobs_source, root, serial, view_token) {
+      promises::future_promise({
+        outcome <- tryCatch({
+          e <- new.env(parent = globalenv())
+          sys.source(source_file, envir = e); sys.source(variant_source, envir = e); sys.source(jobs_source, envir = e)
+          receipt <- e$submit_variant_job(res, variant, cfg, backend_file = source_file,
+            variant_file = variant_source, job_source = jobs_source, job_root = root, ui_controls = frozen_controls)
+          if (length(receipt$job_dir) != 1L || !nzchar(receipt$job_dir)) stop("Submission did not return an independent job directory.")
+          list(ok = TRUE, receipt = receipt)
+        }, error = function(e) list(ok = FALSE, message = conditionMessage(e),
+          job_dir = e$job_dir, status = e$status))
+        c(outcome, list(variant = variant, cfg = cfg, controls = frozen_controls,
+          revision = serial, view_token = view_token))
+      }, seed = TRUE)
+    })
+    observeEvent(single_submit_task$status(), {
+      req(is_active())
+      status <- single_submit_task$status()
+      if (!status %in% c("success", "error")) return()
+      bslib::update_task_button("run", state = "ready", session = session)
+      if (status == "error") return()
+      value <- single_submit_task$result()
+      if (!identical(value$revision, single_revision())) return()
+      single_receipt(value)
+      refresh_job_list()
+      # An A receipt cannot replace a B query, a manually opened result, or a
+      # newer source/view intent that changed while matching/qsub was running.
+      if (isTRUE(value$ok) && identical(controls(), value$controls) && identical(view_revision(), value$view_token)) {
+        launched_controls(value$controls); launched_config(value$cfg); restored_job(FALSE)
+        active_mode("all"); active_job(value$receipt$job_dir); active_job_variant(value$variant)
+        full_result(NULL); full_result_error(NULL); loaded_job(NULL)
+      }
+    }, ignoreInit = TRUE)
+    output$submission_status <- renderUI({
+      pending <- single_submission()
+      if (is.null(pending)) return(NULL)
+      s <- single_submit_task$status()
+      label <- paste(pending$variant$chrom, pending$variant$pos1, pending$variant$ref, pending$variant$alt, sep = ":")
+      if (s == "running") return(div(class = "alert alert-info", "Submitting ", label,
+        " as an independent 16-core full job. Its allele record and filters are frozen; other lookups remain available."))
+      if (s == "error") {
+        message <- tryCatch(single_submit_task$result(), error = function(e) conditionMessage(e))
+        return(div(class = "alert alert-warning", "Submission failed for ", label, ": ", as.character(message)))
+      }
+      receipt <- single_receipt()
+      if (is.null(receipt)) return(NULL)
+      if (!isTRUE(receipt$ok)) return(div(class = "alert alert-warning", "Submission failed for ", label, ": ", receipt$message,
+        if (!is.null(receipt$job_dir)) paste0(" Inspect its own receipt/logs: ", receipt$job_dir)))
+      div(class = "alert alert-success", "Submitted ", label, " · job ", receipt$receipt$job_id,
+        " · 16 cores requested for this variant. Open it from Jobs if another query or result is now selected.")
+    })
     analysis_task <- shiny::ExtendedTask$new(function(res, variant, cfg, cap, source_file, variant_source) {
       promises::future_promise({
         e <- new.env(parent = globalenv())
@@ -230,18 +365,14 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
         }
         if (identical(mode, "all")) {
           if (is.null(job_api)) stop("Persistent SCC full-comparison jobs are not configured. No preview or sampling has been substituted.")
-          receipt <- job_api$submit_variant_job(resources, variant, cfg,
-            backend_file = backend_file, variant_file = variant_file,
-            job_source = job_source, job_root = job_root, ui_controls = controls())
-          if (is.null(receipt$job_dir) || !nzchar(receipt$job_dir)) stop("The SCC submission did not return a saved job directory.")
-          launched_controls(controls()); launched_config(cfg); restored_job(FALSE)
-          active_mode("all")
-          active_job(receipt$job_dir)
-          active_job_variant(variant)
-          full_result(NULL); full_result_error(NULL); loaded_job(NULL)
-          refresh_job_list()
-          bslib::update_task_button("run", state = "ready", session = session)
+          single_revision(single_revision() + 1L); view_revision(view_revision() + 1L)
+          single_submission(list(variant = variant, cfg = cfg, controls = controls(), revision = single_revision()))
+          single_receipt(NULL)
+          bslib::update_task_button("run", state = "busy", session = session)
+          single_submit_task$invoke(resources, variant, cfg, controls(), backend_file, variant_file,
+            job_source, job_root, single_revision(), view_revision())
         } else {
+          view_revision(view_revision() + 1L)
           launched_controls(controls()); launched_config(cfg); restored_job(FALSE)
           active_mode("preview")
           active_job(NULL)
@@ -255,6 +386,68 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       }
     })
     job_list <- reactiveVal(data.frame(job_dir = character(), label = character()))
+    dashboard_revision <- reactiveVal(0L)
+    dashboard_selected <- reactiveVal(NULL)
+    selected_logs <- reactiveVal(NULL)
+    batch_snapshot <- reactiveVal(NULL)
+    batch_task <- shiny::ExtendedTask$new(function(res, lines, settings, identity, frozen_controls,
+      source_file, variant_source, jobs_source, root) {
+      promises::future_promise({
+        e <- new.env(parent = globalenv())
+        sys.source(source_file, envir = e); sys.source(variant_source, envir = e); sys.source(jobs_source, envir = e)
+        variant_batch_submit(e, res, lines, settings, identity, source_file, variant_source, jobs_source, root, frozen_controls)
+      }, seed = TRUE)
+    }) |> bslib::bind_task_button("batch_submit")
+    observeEvent(input$batch_submit, {
+      req(is_active())
+      problem <- tryCatch({
+        if (!resource_ok) stop(conditionMessage(resources))
+        if (is.null(job_api)) stop("Persistent SCC jobs are not configured.")
+        raw <- strsplit(if (is.null(input$batch_queries)) "" else input$batch_queries, "\n", fixed = TRUE)[[1L]]
+        rows <- data.frame(input_line = seq_along(raw), query = trimws(raw), stringsAsFactors = FALSE)
+        rows <- rows[nzchar(rows$query), , drop = FALSE]
+        if (!nrow(rows)) stop("Enter at least one variant coordinate, one per line.")
+        flank <- backend$int_scalar(input$flank, "Flank", 50, 124999)
+        settings <- list(demo = FALSE, bam = "", chrom = "validation", start1 = 1L, end1 = 101L,
+          mapq = input$mapq, baseq = input$baseq, anchor = input$anchor, min_intron = input$min_intron,
+          max_intron = input$max_intron, strand_mode = input$strand_mode,
+          exclude_duplicates = input$exclude_dup, nh1_only = input$nh1)
+        settings <- backend$validate_config(settings); settings$flank <- flank
+        frozen <- controls(); frozen$sampling_mode <- "all"; frozen$sample_cap <- NULL
+        batch_snapshot(list(lines = rows, settings = settings, controls = frozen))
+        batch_task$invoke(resources, rows, settings, source_identity, frozen,
+          backend_file, variant_file, job_source, job_root)
+        bslib::nav_select("result_tabs", "Jobs", session = session)
+        NULL
+      }, error = function(e) conditionMessage(e))
+      if (!is.null(problem)) {
+        showNotification(problem, type = "error", duration = 12)
+        bslib::update_task_button("batch_submit", state = "ready", session = session)
+      }
+    })
+    observeEvent(batch_task$status(), {
+      req(is_active())
+      if (batch_task$status() == "success") refresh_job_list()
+    }, ignoreInit = TRUE)
+    batch_outcomes <- reactive({req(is_active()); batch_task$result()})
+    output$batch_status <- renderUI({
+      s <- batch_task$status()
+      if (s == "initial") return(p("Enter multiple coordinates in Batch variants to submit independent full jobs."))
+      if (s == "running") return(div(class = "alert alert-info", "Resolving and submitting the frozen batch. Each successful line becomes a separate 16-core job; jobs may start while later lines are being checked."))
+      if (s == "error") {
+        message <- tryCatch(batch_task$result(), error = function(e) conditionMessage(e))
+        return(div(class = "alert alert-warning", "Batch orchestration failed: ", as.character(message), ". Inspect Jobs for any submissions already accepted before retrying."))
+      }
+      rows <- batch_outcomes(); ok <- sum(rows$outcome == "SUBMITTED"); duplicate <- sum(rows$outcome == "DUPLICATE_IN_BATCH")
+      failed <- nrow(rows) - ok - duplicate
+      div(class = if (failed) "alert alert-warning" else "alert alert-success",
+        ok, " independent jobs submitted; ", duplicate, " duplicate records skipped; ", failed,
+        " lines unresolved or failed. Each submitted variant has its own 16-core request and saved result.")
+    })
+    output$batch_outcomes <- DT::renderDT(batch_outcomes(), rownames = FALSE, selection = "none",
+      options = list(pageLength = 10, scrollX = TRUE))
+    output$download_batch <- downloadHandler("variant_batch_outcomes.csv", function(file)
+      utils::write.csv(batch_outcomes(), file, row.names = FALSE, na = "NA"))
     refresh_job_list <- function() {
       if (is.null(job_api) || !isTRUE(isolate(is_active()))) return(invisible(NULL))
       found <- tryCatch(job_api$list_variant_jobs(job_root), error = function(e) e)
@@ -263,6 +456,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
         return(invisible(NULL))
       }
       job_list(found)
+      dashboard_revision(isolate(dashboard_revision()) + 1L)
       choices <- if (nrow(found)) stats::setNames(found$job_dir, found$label) else character()
       updateSelectInput(session, "saved_job", choices = choices,
         selected = if (!is.null(active_job()) && active_job() %in% found$job_dir) active_job() else NULL)
@@ -270,6 +464,46 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     }
     observeEvent(input$refresh_jobs, refresh_job_list())
     observeEvent(TRUE, refresh_job_list(), once = TRUE)
+    dashboard_cache <- new.env(parent = emptyenv())
+    dashboard_cache$value <- data.frame(job_dir = character(), label = character())
+    job_dashboard <- reactivePoll(10000, session,
+      checkFunc = function() {
+        dashboard_revision()
+        if (!isTRUE(is_active()) || is.null(job_api)) {
+          dashboard_cache$value <- data.frame(job_dir = character(), label = character())
+          return(NULL)
+        }
+        rows <- tryCatch({
+          if (is.function(job_api$list_variant_job_statuses)) job_api$list_variant_job_statuses(job_root) else
+            job_api$list_variant_jobs(job_root)
+        }, error = function(e) data.frame(job_dir = character(), label = character()))
+        dashboard_cache$value <- rows
+        jsonlite::toJSON(rows, dataframe = "rows", na = "null")
+      }, valueFunc = function() dashboard_cache$value)
+    observeEvent(job_dashboard(), {
+      req(is_active())
+      rows <- job_dashboard()
+      job_list(rows[, c("job_dir", "label"), drop = FALSE])
+      current <- isolate(input$saved_job)
+      selected <- if (length(current) == 1L && current %in% rows$job_dir) current else
+        if (!is.null(active_job()) && active_job() %in% rows$job_dir) active_job() else NULL
+      updateSelectInput(session, "saved_job", choices = stats::setNames(rows$job_dir, rows$label), selected = selected)
+    }, ignoreNULL = TRUE)
+    output$jobs_table <- DT::renderDT({
+      req(is_active())
+      rows <- job_dashboard()
+      columns <- setdiff(names(rows), c("job_dir", "label", "source_id"))
+      if (!length(columns)) columns <- "label"
+      selected <- match(dashboard_selected(), rows$job_dir)
+      DT::datatable(rows[, columns, drop = FALSE], rownames = FALSE,
+        selection = list(mode = "single", selected = selected[!is.na(selected)]),
+        options = list(pageLength = 10, scrollX = TRUE))
+    })
+    observeEvent(input$jobs_table_rows_selected, {
+      req(is_active())
+      index <- input$jobs_table_rows_selected; rows <- job_dashboard()
+      if (length(index) == 1L && index >= 1L && index <= nrow(rows)) dashboard_selected(rows$job_dir[[index]])
+    })
     poll_cache <- new.env(parent = emptyenv())
     poll_cache$value <- NULL
     job_state <- reactivePoll(2000, session,
@@ -290,6 +524,8 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       state <- job_api$read_variant_job(path, job_root = job_root)
       if (!is.null(source_identity) && !identical(state$request$cfg$data_source_id, source_identity$id))
         stop("This saved job belongs to a different or unidentified dataset. Reconnect its original prepared profile before opening it.")
+      view_revision(view_revision() + 1L)
+      selected_logs(NULL)
       active_mode("all"); active_job(path); restored_job(TRUE)
       full_result(NULL); full_result_error(NULL); loaded_job(NULL)
       launched_controls(state$request$ui_controls)
@@ -309,6 +545,28 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       tryCatch(open_saved_job(input$saved_job), error = function(e)
         showNotification(conditionMessage(e), type = "error", duration = 10))
     })
+    observeEvent(input$open_dashboard_job, {
+      req(is_active())
+      tryCatch({
+        open_saved_job(dashboard_selected())
+        bslib::nav_select("result_tabs", "Genotype comparison", session = session)
+      }, error = function(e) showNotification(conditionMessage(e), type = "error", duration = 10))
+    })
+    resume_pending <- reactiveVal(NULL)
+    resume_receipt <- reactiveVal(NULL)
+    resume_task <- shiny::ExtendedTask$new(function(path, root, source_file, variant_source, jobs_source, identity, frozen_controls, token) {
+      promises::future_promise({
+        value <- tryCatch({
+          e <- new.env(parent = globalenv())
+          sys.source(source_file, envir = e); sys.source(variant_source, envir = e); sys.source(jobs_source, envir = e)
+          state <- e$read_variant_job(path, job_root = root)
+          if (!is.null(identity) && !identical(state$request$cfg$data_source_id, identity$id))
+            stop("The saved job's source identity does not match this dataset.")
+          list(ok = TRUE, receipt = e$resume_variant_job(path, job_root = root))
+        }, error = function(e) list(ok = FALSE, message = conditionMessage(e)))
+        c(value, list(job_dir = path, controls = frozen_controls, view_token = token))
+      }, seed = TRUE)
+    }) |> bslib::bind_task_button("resume_job")
     observeEvent(input$resume_job, {
       req(is_active())
       tryCatch({
@@ -320,10 +578,33 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
           if (!identical(state$request$cfg$data_source_id, source_identity$id))
             stop("This saved job belongs to a different or unidentified dataset. Reconnect its original prepared profile before resuming it.")
         }
-        job_api$resume_variant_job(path, job_root = job_root)
-        open_saved_job(path)
-        refresh_job_list()
-      }, error = function(e) showNotification(conditionMessage(e), type = "error", duration = 10))
+        view_revision(view_revision() + 1L)
+        resume_pending(path); resume_receipt(NULL)
+        resume_task$invoke(path, job_root, backend_file, variant_file, job_source, source_identity, controls(), view_revision())
+      }, error = function(e) {
+        showNotification(conditionMessage(e), type = "error", duration = 10)
+        bslib::update_task_button("resume_job", state = "ready", session = session)
+      })
+    })
+    observeEvent(resume_task$status(), {
+      req(is_active())
+      if (resume_task$status() != "success") return()
+      value <- resume_task$result(); resume_receipt(value)
+      refresh_job_list()
+      if (isTRUE(value$ok) && identical(view_revision(), value$view_token) && identical(controls(), value$controls))
+        tryCatch(open_saved_job(value$job_dir), error = function(e) showNotification(conditionMessage(e), type = "error", duration = 10))
+    }, ignoreInit = TRUE)
+    output$resume_status <- renderUI({
+      if (is.null(resume_pending())) return(NULL)
+      state <- resume_task$status()
+      if (state == "running") return(div(class = "alert alert-info", "Requesting a resume for ", basename(resume_pending()), ". Other queries remain available."))
+      if (state == "error") {
+        message <- tryCatch(resume_task$result(), error = function(e) conditionMessage(e))
+        return(div(class = "alert alert-warning", "Resume failed: ", as.character(message)))
+      }
+      value <- resume_receipt(); if (is.null(value)) return(NULL)
+      div(class = if (isTRUE(value$ok)) "alert alert-success" else "alert alert-warning",
+        if (isTRUE(value$ok)) paste0("Resume submitted for ", basename(value$job_dir), "; its independent attempt is listed in Jobs.") else paste0("Resume failed: ", value$message))
     })
     observeEvent(job_state(), {
       req(is_active())
@@ -353,6 +634,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       tagList(div(class = "alert alert-info",
         strong(paste0("All matched BAMs · ", state$status)),
         if (!is.null(state$job_id)) paste0(" · SCC job ", state$job_id),
+        if (!is.null(state$request$cores)) paste0(" · ", state$request$cores, " dedicated cores; ", state$request$workers, " sample workers"),
         tags$br(), if (!is.null(v)) paste(v$chrom[[1L]], v$pos1[[1L]], v$ref[[1L]], v$alt[[1L]], sep = ":"),
         tags$br(), "Selected: ", num(p$total), " · completed: ", num(p$completed),
         " · succeeded: ", num(p$success), " · failed: ", num(p$failed),
@@ -366,6 +648,36 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
           tagList(h5("Actual sample counts by genotype · job progress"), DT::DTOutput(session$ns("progress_groups"))),
         if (!is.null(state$error)) div(class = "alert alert-danger", state$error),
         if (!is.null(full_result_error())) div(class = "alert alert-danger", "Result validation failed: ", full_result_error()))
+    })
+    output$job_files <- renderUI({
+      if (!identical(active_mode(), "all") || is.null(active_job())) return(NULL)
+      tagList(h5("Selected job's independent files"), p(code(active_job())),
+        p("Matching/preparation logs, each submission attempt's stdout/stderr, checkpoints and final results belong to this directory only."),
+        actionButton(session$ns("refresh_job_logs"), "Read selected job log tails"),
+        verbatimTextOutput(session$ns("job_log_tail")))
+    })
+    observeEvent(input$refresh_job_logs, {
+      req(is_active(), !is.null(active_job()))
+      path <- active_job()
+      logs <- tryCatch({
+        if (!is.function(job_api$read_variant_job_logs)) stop("Bounded log reading is unavailable in this backend; use the selected job directory above.")
+        job_api$read_variant_job_logs(path, job_root = job_root, max_lines = 100L)
+      }, error = function(e) list(job_dir = path, error = conditionMessage(e)))
+      selected_logs(logs)
+    })
+    output$job_log_tail <- renderPrint({
+      req(is_active())
+      logs <- selected_logs()
+      if (is.null(logs) || !identical(logs$job_dir, active_job())) {
+        cat("Use Read selected job log tails to inspect this job's latest attempt.\n"); return(invisible(NULL))
+      }
+      if (!is.null(logs$error)) {cat(logs$error, "\n"); return(invisible(NULL))}
+      cat("Job directory:", logs$job_dir, "\nAttempt:", logs$attempt, "\n")
+      for (name in names(logs$logs)) {
+        entry <- logs$logs[[name]]
+        cat("\n", name, if (isTRUE(entry$truncated)) " (bounded tail)" else "", "\n", sep = "")
+        if (!isTRUE(entry$exists)) cat("Not written for this attempt.\n") else cat(paste(entry$lines, collapse = "\n"), "\n")
+      }
     })
     output$progress_groups <- DT::renderDT({
       req(identical(active_mode(), "all"))
@@ -545,6 +857,8 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     invisible(list(result = result, lookup_task = lookup_task, analysis_task = analysis_task,
       results_stale = results_stale, selected_record = selected_record,
       active_mode = active_mode, active_job = active_job, job_state = job_state,
+      single_submit_task = single_submit_task, resume_task = resume_task, batch_task = batch_task, batch_outcomes = batch_outcomes,
+      job_dashboard = job_dashboard,
       open_saved_job = open_saved_job, full_result = full_result))
   })
 }
