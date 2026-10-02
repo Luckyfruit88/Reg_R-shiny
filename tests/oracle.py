@@ -1,7 +1,6 @@
 """Independent synthetic-data arithmetic oracle. Does NOT execute or validate R."""
 import json
 import re
-from pathlib import Path
 
 
 def cigar_intervals(pos1, cigar):
@@ -59,9 +58,5 @@ assert len(cigar_intervals(181, "20M100N30M100N20M")[1]) == 2
 assert cigar_intervals(181, "5S10=2X8M3I100N20M2D5M")[1] == [(200, 300)]
 report = {"synthetic_expected_values": answer,
           "independent_python_oracle": "PASS",
-          "r_parse_and_unit_tests": "NOT RUN - R not installed in delivery environment",
-          "samtools_regtools_integration": "NOT RUN - executables not installed",
-          "browser_test": "NOT RUN", "user_bam_validation": "NOT RUN - no BAM supplied"}
+          "scope": "Synthetic arithmetic only; R, native tools and browser checks are separate."}
 print(json.dumps(report, indent=2, ensure_ascii=False))
-Path(__file__).resolve().with_name("validation_status.json").write_text(
-    json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

@@ -1,0 +1,12 @@
+# Run from the clone root. This is a small source/runtime preflight, not a BAM audit.
+source("runtime_setup.R")
+runtime <- regshiny_runtime_setup(strict_native = TRUE)
+source("data_sources.R")
+spec <- default_fhs_spec()
+fields <- c("rna_map", "bam_map", "vcf_dir", "annotation_gtf", "reference_fasta")
+checks <- vapply(spec[fields], function(path) file.exists(path) && file.access(path, 4) == 0L, logical(1))
+print(data.frame(resource = fields, readable = checks), row.names = FALSE)
+cat("Native tools and private temporary directory: PASS\n")
+if (length(runtime$missing_scheduler)) cat("Full-job scheduler tools unavailable:", paste(runtime$missing_scheduler, collapse = ", "), "\n")
+if (!all(checks)) stop("Some default FHS sources are unavailable. Restore authorized SCC access or select custom data in the app.")
+cat("Default FHS source paths: readable. Prepare and connect in the app validates headers, indexes and exact sample mapping.\n")

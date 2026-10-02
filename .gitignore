@@ -19,6 +19,10 @@
 *.fastq.gz
 *.fq
 *.fq.gz
+*.vcf
+*.vcf.gz
+*.bcf
+*.tbi
 /data/*
 !/data/README.txt
 
@@ -30,3 +34,30 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Local deployment and generated validation evidence
+/config/runtime.Renviron
+/config/*manifest*.tsv
+/config/*provenance*.json
+/var/
+/validation/
+/DEPLOYMENT.md
+
+# Persistent controlled per-user full-cohort requests, checkpoints and results
+/jobs/
+
+# Generated public annotation index and its deployment metadata
+/resources/gencode_v48/
+
+# User-owned data-source manifests, identities, annotation indexes and jobs
+/.reg_shiny/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Participant-level tables / serialized analysis objects are not source code
+*.rds
+*.RDS
+*.csv
+*.tsv
+!/examples/*.example.tsv

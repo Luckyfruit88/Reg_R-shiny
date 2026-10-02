@@ -1,0 +1,3 @@
+chrom	vcf	build
+chr1	/absolute/path/to/chr1.vcf.gz	GRCh38
+chr2	/absolute/path/to/chr2.vcf.gz	GRCh38

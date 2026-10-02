@@ -1,4 +1,4 @@
-name: regtools-shiny
+name: Reg_Shiny
 channels:
   - conda-forge
   - bioconda
@@ -14,4 +14,5 @@ dependencies:
   - r-promises
   - r-jsonlite
   - samtools>=1.20
+  - bcftools>=1.20
   - regtools=1.0.0

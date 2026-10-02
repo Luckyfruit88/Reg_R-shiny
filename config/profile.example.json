@@ -1,0 +1,15 @@
+{
+  "kind": "custom",
+  "label": "My RNA and DNA cohort",
+  "build": "GRCh38",
+  "vcf": "/absolute/path/to/cohort.vcf.gz",
+  "vcf_registry": "",
+  "mapping": "/absolute/path/to/sample_mapping.tsv",
+  "mapping_mode": "explicit",
+  "bam_dir": "",
+  "bam": "",
+  "reference_fasta": "/absolute/path/to/GRCh38.fa",
+  "reference_receipt": "",
+  "annotation_gtf": "",
+  "annotation_db": ""
+}

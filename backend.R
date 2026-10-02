@@ -1,4 +1,4 @@
-# RegTools Shiny MVP — computational backend.
+# Reg_Shiny computational backend.
 # Coordinates: GUI = 1-based closed intron interval; internal = 0-based half-open.
 # Counting unit = retained primary alignment record (paired ends count separately).
 # Requires processx and data.table; external programs: samtools and regtools.
@@ -6,28 +6,61 @@
 int_scalar <- function(x, name, lower = 0, upper = 2e9) {
   if (length(x) != 1L || is.na(x) || !is.numeric(x) ||
       !is.finite(x) || x != floor(x) || x < lower || x > upper)
-    stop(name, " 必须是 ", lower, " 到 ", upper, " 之间的整数。", call. = FALSE)
+    stop(name, " must be an integer from ", lower, " to ", upper, ".", call. = FALSE)
   as.integer(x)
 }
 
 validate_config <- function(cfg) {
-  cfg$start1 <- int_scalar(cfg$start1, "区间起点", 1)
-  cfg$end1 <- int_scalar(cfg$end1, "区间终点", cfg$start1)
+  cfg$start1 <- int_scalar(cfg$start1, "Analysis start", 1)
+  cfg$end1 <- int_scalar(cfg$end1, "Analysis end", cfg$start1)
   if (cfg$end1 - cfg$start1 + 1 > 250000)
-    stop("原型限单次区间长度 250,000 bp；请缩小区间。", call. = FALSE)
+    stop("The maximum analysis interval is 250,000 bp. Select a smaller interval.", call. = FALSE)
   if (length(cfg$chrom) != 1L || is.na(cfg$chrom) ||
       !grepl("^[A-Za-z0-9_.-]+$", cfg$chrom))
-    stop("染色体名称只支持字母、数字、点、下划线、短横线。", call. = FALSE)
+    stop("Chromosome names may contain only letters, numbers, dots, underscores and hyphens.", call. = FALSE)
   cfg$mapq <- int_scalar(cfg$mapq, "MAPQ", 0, 255)
   cfg$baseq <- int_scalar(cfg$baseq, "BaseQ", 0, 93)
   cfg$anchor <- int_scalar(cfg$anchor, "Anchor", 1, 1000)
-  cfg$min_intron <- int_scalar(cfg$min_intron, "最短内含子", 1)
-  cfg$max_intron <- int_scalar(cfg$max_intron, "最长内含子", cfg$min_intron)
-  if (!cfg$strand_mode %in% c("XS", "RF", "FR")) stop("无效的链模式。")
+  cfg$min_intron <- int_scalar(cfg$min_intron, "Minimum intron length", 1)
+  cfg$max_intron <- int_scalar(cfg$max_intron, "Maximum intron length", cfg$min_intron)
+  if (!cfg$strand_mode %in% c("XS", "RF", "FR")) stop("Invalid strandedness mode.")
   cfg$exclude_duplicates <- isTRUE(cfg$exclude_duplicates)
   cfg$nh1_only <- isTRUE(cfg$nh1_only)
   cfg$demo <- isTRUE(cfg$demo)
   cfg
+}
+
+
+parse_bam_contigs <- function(header_lines) {
+  sq <- strsplit(header_lines[startsWith(header_lines, "@SQ\t")], "\t", fixed = TRUE)
+  if (!length(sq)) stop("The BAM header has no reference sequences (@SQ records).")
+  value <- function(fields, prefix) {
+    hit <- fields[startsWith(fields, prefix)]
+    if (length(hit) != 1L) stop("Malformed reference sequence in the BAM header.")
+    substring(hit, nchar(prefix) + 1L)
+  }
+  chrom <- vapply(sq, value, character(1), prefix = "SN:")
+  length_bp <- suppressWarnings(as.numeric(vapply(sq, value, character(1), prefix = "LN:")))
+  if (any(!nzchar(chrom)) || anyDuplicated(chrom) || anyNA(length_bp) ||
+      any(!is.finite(length_bp)) || any(length_bp < 1) || any(length_bp != floor(length_bp)))
+    stop("Invalid reference names or lengths in the BAM header.")
+  data.frame(chrom = chrom, length_bp = length_bp, stringsAsFactors = FALSE)
+}
+
+read_bam_contigs <- function(bam) {
+  if (length(bam) != 1L || !file.exists(bam)) stop("Select an existing BAM file.")
+  samtools <- unname(Sys.which("samtools"))
+  if (!nzchar(samtools)) stop("samtools is not available in PATH.")
+  p <- processx::run(samtools, c("view", "-H", bam), timeout = 20, error_on_status = FALSE)
+  if (p$status != 0L) stop("Cannot read the BAM header: ", p$stderr)
+  parse_bam_contigs(strsplit(p$stdout, "\n", fixed = TRUE)[[1L]])
+}
+
+choose_bam_contig <- function(contigs, current = NULL) {
+  if (length(current) == 1L && !is.na(current) && current %in% contigs$chrom) return(current)
+  preferred <- c("chr1", "1")
+  found <- preferred[preferred %in% contigs$chrom]
+  if (length(found)) found[[1L]] else contigs$chrom[[1L]]
 }
 
 empty_events <- function() data.frame(
@@ -44,9 +77,9 @@ parse_cigar <- function(cigar, pos1) {
   if (identical(cigar, "*")) return(list(blocks = empty, introns = empty))
   tokens <- regmatches(cigar, gregexpr("[0-9]+[MIDNSHP=X]", cigar, perl = TRUE))[[1L]]
   if (!length(tokens) || paste0(tokens, collapse = "") != cigar)
-    stop("不支持或无效的 CIGAR: ", cigar, call. = FALSE)
+    stop("Unsupported or invalid CIGAR: ", cigar, call. = FALSE)
   lens <- as.integer(sub("[MIDNSHP=X]$", "", tokens))
-  if (anyNA(lens) || any(lens <= 0)) stop("CIGAR 长度无效。")
+  if (anyNA(lens) || any(lens <= 0)) stop("Invalid CIGAR operation length.")
   ops <- substring(tokens, nchar(tokens))
   pos0 <- as.integer(pos1) - 1L
   blocks <- list(); introns <- list()
@@ -76,7 +109,7 @@ infer_regtools_strand <- function(flag, xs, mode) {
 
 parse_sam_records <- function(lines, cfg) {
   z <- strsplit(lines, "\t", fixed = TRUE)
-  if (length(z) && any(lengths(z) < 11L)) stop("SAM 行少于 11 列。")
+  if (length(z) && any(lengths(z) < 11L)) stop("A SAM record contains fewer than 11 fields.")
   get_col <- function(k) vapply(z, function(x) x[[k]], character(1))
   get_tag <- function(prefix) vapply(z, function(x) {
     optional <- if (length(x) > 11L) x[12:length(x)] else character()
@@ -123,12 +156,12 @@ read_regtools_bed <- function(path) {
   if (!file.exists(path) || file.info(path)$size == 0) return(empty)
   b <- data.table::fread(path, header = FALSE, sep = "\t", data.table = FALSE,
                         colClasses = "character", quote = "", na.strings = NULL)
-  if (ncol(b) != 12L) stop("RegTools 输出不是 BED12。")
+  if (ncol(b) != 12L) stop("RegTools output is not BED12.")
   names(b) <- names(empty)[seq_len(12L)]
   for (n in c("chromStart", "chromEnd", "score", "thickStart", "thickEnd", "blockCount"))
     b[[n]] <- as.integer(b[[n]])
   if (anyNA(b$score) || any(b$score < 0) || any(b$blockCount != 2L))
-    stop("RegTools BED12 的 score 或 blockCount 无效。")
+    stop("Invalid score or blockCount in RegTools BED12 output.")
   sizes <- strsplit(b$blockSizes, ",", fixed = TRUE)
   left <- vapply(sizes, function(x) as.integer(x[[1L]]), integer(1))
   right <- vapply(sizes, function(x) as.integer(x[[2L]]), integer(1))
@@ -163,10 +196,55 @@ default_demo_config <- function() list(
   mapq = 20L, baseq = 0L, anchor = 8L, min_intron = 70L, max_intron = 500000L,
   strand_mode = "XS", exclude_duplicates = FALSE, nh1_only = FALSE)
 
+# Count observed RNA bases at one reference position in the exact retained SAM
+# snapshot. SAM SEQ is already in reference orientation, including reverse reads.
+# These are alignment observations, not DNA genotypes or a variant caller.
+count_rna_bases <- function(records, position1, min_baseq = 0L) {
+  position1 <- int_scalar(position1, "Variant position", 1)
+  min_baseq <- int_scalar(min_baseq, "RNA base quality", 0, 93)
+  counts <- stats::setNames(integer(5), c("A", "C", "G", "T", "N"))
+  excluded <- c(skipped_N = 0L, deleted_D = 0L, low_baseq = 0L,
+                missing_sequence = 0L, missing_quality = 0L)
+  for (record in records) {
+    fields <- strsplit(record, "\t", fixed = TRUE)[[1L]]
+    if (length(fields) < 11L) stop("Malformed SAM record in RNA base audit.")
+    ref <- as.integer(fields[[4L]]); query <- 1L
+    tokens <- regmatches(fields[[6L]], gregexpr("[0-9]+[MIDNSHP=X]", fields[[6L]]))[[1L]]
+    for (token in tokens) {
+      op <- substring(token, nchar(token)); n <- as.integer(substring(token, 1L, nchar(token)-1L))
+      if (op %in% c("M", "=", "X", "D", "N") && position1 >= ref && position1 < ref+n) {
+        if (op %in% c("D", "N")) {
+          key <- if (op == "D") "deleted_D" else "skipped_N"
+          excluded[[key]] <- excluded[[key]] + 1L
+        } else {
+          q <- query + position1-ref
+          if (fields[[10L]] == "*" || nchar(fields[[10L]]) < q) {
+            excluded[["missing_sequence"]] <- excluded[["missing_sequence"]] + 1L
+          } else if (fields[[11L]] == "*" || nchar(fields[[11L]]) < q) {
+            excluded[["missing_quality"]] <- excluded[["missing_quality"]] + 1L
+          } else if (utf8ToInt(substr(fields[[11L]], q, q))-33L < min_baseq) {
+            excluded[["low_baseq"]] <- excluded[["low_baseq"]] + 1L
+          } else {
+            base <- toupper(substr(fields[[10L]], q, q))
+            if (!base %in% names(counts)) base <- "N"
+            counts[[base]] <- counts[[base]] + 1L
+          }
+        }
+        break
+      }
+      if (op %in% c("M", "=", "X", "D", "N")) ref <- ref+n
+      if (op %in% c("M", "=", "X", "I", "S")) query <- query+n
+    }
+  }
+  answer <- data.frame(base = names(counts), count = unname(counts))
+  attr(answer, "excluded") <- excluded
+  answer
+}
+
 analyze_bam <- function(cfg) {
   cfg <- validate_config(cfg)
   tools <- Sys.which(c("samtools", "regtools"))
-  if (any(!nzchar(tools))) stop("PATH 中缺少：", paste(names(tools)[!nzchar(tools)], collapse = ", "))
+  if (any(!nzchar(tools))) stop("Missing executables in PATH: ", paste(names(tools)[!nzchar(tools)], collapse = ", "))
   work <- tempfile("regtools_shiny_"); dir.create(work, mode = "0700")
   on.exit(unlink(work, recursive = TRUE), add = TRUE)
   logs <- character(); warnings <- character()
@@ -178,7 +256,7 @@ analyze_bam <- function(cfg) {
     logs <<- c(logs, paste(c(tool, vapply(as.character(args), shQuote, character(1))), collapse = " "),
                p$stderr)
     if (isTRUE(p$timeout) || is.na(p$status) || p$status != 0L)
-      stop(tool, " 执行失败：", p$stderr, call. = FALSE)
+      stop(tool, " failed: ", p$stderr, call. = FALSE)
     p$stdout
   }
   help <- processx::run(unname(tools[["regtools"]]), c("junctions", "extract", "-h"),
@@ -196,13 +274,13 @@ analyze_bam <- function(cfg) {
     run("samtools", c("sort", "-o", bam, sam)); run("samtools", c("index", bam))
   } else {
     if (!file.exists(cfg$bam) || !grepl("\\.bam$", cfg$bam, ignore.case = TRUE))
-      stop("请选择存在的 BAM 文件。")
+      stop("Select an existing BAM file.")
     bam <- normalizePath(cfg$bam, mustWork = TRUE)
     idx <- c(paste0(bam, ".bai"), sub("\\.bam$", ".bai", bam, ignore.case = TRUE),
              paste0(bam, ".csi"), sub("\\.bam$", ".csi", bam, ignore.case = TRUE))
-    if (!any(file.exists(idx))) stop("BAM 旁边没有 BAI/CSI；请先排序并建立索引。")
+    if (!any(file.exists(idx))) stop("No BAI or CSI index was found next to the BAM. A matching index is required.")
     if (any(file.info(idx[file.exists(idx)])$mtime < file.info(bam)$mtime))
-      warnings <- c(warnings, "索引修改时间早于 BAM：请核实索引与 BAM 是否匹配。")
+      warnings <- c(warnings, "The index is older than the BAM. Verify that the index matches the BAM.")
   }
   bam_stat_before <- file.info(bam)[, c("size", "mtime"), drop = FALSE]
   run("samtools", c("quickcheck", "-v", bam))
@@ -211,21 +289,26 @@ analyze_bam <- function(cfg) {
   names_seq <- vapply(sq, function(x) sub("^SN:", "", x[startsWith(x, "SN:")][1L]), character(1))
   sizes_seq <- vapply(sq, function(x) as.numeric(sub("^LN:", "", x[startsWith(x, "LN:")][1L])), numeric(1))
   hit <- match(cfg$chrom, names_seq)
-  if (is.na(hit)) stop("BAM 没有染色体 ", cfg$chrom, "；检查 chr 前缀和参考基因组。")
-  if (cfg$end1 > sizes_seq[[hit]]) stop("分析终点超过染色体长度。")
+  if (is.na(hit)) stop("The selected BAM has no chromosome named ", cfg$chrom, ". Select a chromosome from this BAM and check the reference assembly.")
+  if (cfg$end1 > sizes_seq[[hit]]) stop("The analysis end exceeds the chromosome length.")
   region <- paste0(cfg$chrom, ":", cfg$start1, "-", cfg$end1)
   flag_mask <- 4L + 256L + 512L + 2048L + if (cfg$exclude_duplicates) 1024L else 0L
   opts <- c("-q", cfg$mapq, "-F", flag_mask)
   fetched_count <- as.numeric(trimws(run("samtools", c("view", "-c", opts, bam, region))))
   if (!is.finite(fetched_count) || fetched_count > 100000)
-    stop("区间候选 alignment 超过原型上限 100,000；请缩小区间，不会偷偷抽样。")
+    stop("The interval exceeds 100,000 candidate alignments. Select a smaller interval; reads will not be subsampled.")
   selected_sam <- file.path(work, "selected.sam")
   run("samtools", c("view", "-h", opts, "-o", selected_sam, bam, region))
   if (file.info(selected_sam)$size > 256 * 1024^2)
-    stop("局部 SAM 超过 256 MiB；请缩小区间。")
+    stop("The regional SAM exceeds 256 MiB. Select a smaller interval.")
   text <- readLines(selected_sam, warn = FALSE)
   headers <- text[startsWith(text, "@")]; records <- text[!startsWith(text, "@")]
   parsed <- parse_sam_records(records, cfg)
+  rna_bases <- if (!is.null(cfg$variant_position)) {
+    if (cfg$variant_position < cfg$start1 || cfg$variant_position > cfg$end1)
+      stop("Variant position must be inside the analysis interval.")
+    count_rna_bases(records[parsed$keep], cfg$variant_position, cfg$baseq)
+  } else NULL
   retained_sam <- file.path(work, "retained.sam")
   writeLines(c(headers, records[parsed$keep]), retained_sam)
   local_bam <- file.path(work, "retained.bam")
@@ -247,7 +330,7 @@ analyze_bam <- function(cfg) {
   observed_counts <- as.integer(observed[match(j$key, names(observed))])
   observed_counts[is.na(observed_counts)] <- 0L
   if (any(observed_counts != j$score))
-    stop("核验失败：逐 read CIGAR 计数与原生 RegTools score 不一致。请检查工具版本、链模式和异常 CIGAR；不输出未核实指标。")
+    stop("Audit failed: read-level CIGAR counts differ from native RegTools scores. Check tool versions, strandedness and unusual CIGAR strings. Unverified metrics are not reported.")
   e$intron_start1 <- e$intron_start0 + 1L; e$intron_end1 <- e$intron_end0
   depth_path <- file.path(work, "depth.tsv")
   # Input is already filtered. Re-include DUP to respect the user's duplicate choice.
@@ -261,19 +344,19 @@ analyze_bam <- function(cfg) {
     m <- match(d$pos1, depth$pos1); ok <- !is.na(m) & d$chrom == cfg$chrom
     depth$depth[m[ok]] <- d$depth[ok]
   }
-  if (!nrow(j)) warnings <- c(warnings, "没有检出通过当前过滤的 junction；这不等于证明该区域不存在剪接。")
+  if (!nrow(j)) warnings <- c(warnings, "No junctions passed the current filters. This does not establish that the region has no splicing.")
   if (any(parsed$reads$mapq == 255L)) warnings <- c(warnings,
-    "保留了 MAPQ=255 的记录；255 表示 mapping quality 不可用，不应自动等同于唯一比对。")
+    "Some retained records have MAPQ=255, meaning mapping quality is unavailable. Do not automatically interpret these as uniquely mapped reads.")
   if (any(parsed$reads$strand == "?")) warnings <- c(warnings,
-    "部分 reads 链方向未知（?）。原型汇总所有链；不把缺失 XS 解释为正链。")
+    "Some reads have unknown strand (?). Metrics combine all strands; a missing XS tag is not interpreted as positive strand.")
   if (cfg$strand_mode != "XS") warnings <- c(warnings,
-    "RF/FR 按 RegTools flags 规则推断；请用已知方向的对照核实你的文库，尤其是单端数据。")
+    "RF/FR follows RegTools flag rules. Verify library direction using a known control, especially for single-end data.")
   if (cfg$nh1_only && parsed$missing_nh > 0) warnings <- c(warnings,
-    paste0("启用 NH==1 后，缺失 NH 的 ", parsed$missing_nh, " 条候选记录也被排除。"))
+    paste0("Requiring NH==1 also excluded ", parsed$missing_nh, " candidate records with missing NH."))
   if (!identical(bam_stat_before, file.info(bam)[, c("size", "mtime"), drop = FALSE]))
-    stop("分析期间 BAM 大小或修改时间发生变化；请在文件稳定后重新运行。")
+    stop("The BAM size or modification time changed during analysis. Retry after the file is stable.")
   cfg$bam <- if (cfg$demo) "synthetic_demo" else bam
-  list(config = cfg, reads = parsed$reads, events = e, junctions = j, depth = depth,
+  list(config = cfg, reads = parsed$reads, events = e, junctions = j, depth = depth, rna_bases = rna_bases,
        native_audit_passed = TRUE, candidate_alignments = fetched_count,
        span_only_excluded = parsed$span_only_excluded,
        warnings = unique(warnings), log = logs,
@@ -287,12 +370,12 @@ analyze_bam <- function(cfg) {
 }
 
 summarize_target <- function(result, start1, end1, delta = 5L, flank = 50L) {
-  s <- int_scalar(start1, "目标内含子起点", 1)
-  t <- int_scalar(end1, "目标内含子终点", s)
-  delta <- int_scalar(delta, "near 容差", 0, 1000)
+  s <- int_scalar(start1, "Target intron start", 1)
+  t <- int_scalar(end1, "Target intron end", s)
+  delta <- int_scalar(delta, "Near tolerance", 0, 1000)
   c <- result$config
   if (s - delta <= c$start1 || t + delta >= c$end1)
-    stop("目标及 near 容差两侧必须各留至少 1 bp 在已读取区间内；请扩大区间后重新读取。")
+    stop("The target and near tolerance must leave at least 1 bp on each side inside the loaded interval. Expand the analysis interval and rerun.")
   e <- result$events
   exact <- e$intron_start1 == s & e$intron_end1 == t
   near <- abs(e$intron_start1 - s) <= delta & abs(e$intron_end1 - t) <= delta & !exact
