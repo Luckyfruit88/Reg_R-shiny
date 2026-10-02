@@ -23,7 +23,7 @@ run_data_source_tests <- function(native = FALSE) {
   child_env <- character()
   if (!native) {
     python <- data_source_python()
-    fake <- paste0("#!", python, "\nimport sys\nfrom pathlib import Path\n",
+    fake <- paste0("#!", python, "\nimport sys,re\nfrom pathlib import Path\nfrom collections import Counter\n",
       "if Path(sys.argv[0]).name == 'samtools' and '-c' in sys.argv:\n",
       " p=Path(sys.argv[-2]+'.bai')\n",
       " if p.read_bytes()!=b'synthetic index\\n': sys.exit('invalid BAM index')\n",
@@ -31,6 +31,13 @@ run_data_source_tests <- function(native = FALSE) {
       "elif Path(sys.argv[0]).name == 'bcftools' and sys.argv[1]=='query':\n",
       " p=Path(sys.argv[-1]+'.tbi')\n",
       " if p.read_bytes()!=b'synthetic index\\n': sys.exit('invalid VCF index')\n",
+      "elif Path(sys.argv[0]).name == 'bcftools' and sys.argv[1]=='index':\n",
+      " p=Path(sys.argv[-1]+'.tbi')\n",
+      " if p.read_bytes()!=b'synthetic index\\n': sys.exit('invalid VCF index')\n",
+      " lines=Path(sys.argv[-1]).read_text().splitlines()\n",
+      " lengths={re.search(r'ID=([^,>]+)',l).group(1):re.search(r'length=(\\d+)',l).group(1) for l in lines if l.startswith('##contig=<')}\n",
+      " counts=Counter(l.split('\\t')[0] for l in lines if l and not l.startswith('#'))\n",
+      " for c,n in sorted(counts.items()): print(c+'\\t'+lengths[c]+'\\t'+str(n))\n",
       "else: sys.stdout.write(Path(sys.argv[-1]).read_text())\n")
     for (tool in c("bcftools", "samtools")) {
       writeLines(fake, file.path(fakebin, tool))
@@ -62,11 +69,13 @@ run_data_source_tests <- function(native = FALSE) {
     }
     normalizePath(path)
   }
-  make_vcf <- function(path, samples = c("DNA_A", "DNA_B"), lengths = c(chr1 = 1000L)) {
+  make_vcf <- function(path, samples = c("DNA_A", "DNA_B"), lengths = c(chr1 = 1000L),
+                       data_chrom = names(lengths)[[1L]]) {
     header <- c("##fileformat=VCFv4.2",
       paste0("##contig=<ID=", names(lengths), ",length=", lengths, ">"),
       '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
-      paste(c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", samples), collapse = "\t"))
+      paste(c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", samples), collapse = "\t"),
+      paste(c(data_chrom, "10", ".", "A", "C", ".", "PASS", ".", "GT", rep("0/1", length(samples))), collapse = "\t"))
     if (native) {
       raw <- sub("\\.gz$", "", path); writeLines(header, raw)
       native_run("bcftools", c("view", "-Oz", "-o", path, raw))
@@ -101,8 +110,41 @@ run_data_source_tests <- function(native = FALSE) {
   before <- unname(tools::md5sum(bundle$config$sample_manifest))
   again <- prepare_data_profile(spec, app, state)
   stopifnot(identical(bundle$id, again$id), identical(before, unname(tools::md5sum(bundle$config$sample_manifest))))
-  listed <- list_data_profiles(app, state)
-  stopifnot(nrow(listed) == 1L, listed$id == bundle$id, listed$profile_dir == bundle$profile_dir)
+  # Per-chromosome VCFs can retain a whole-genome header including unused HLA
+  # names. Auto selection follows index records; explicit selection validates
+  # only the exact requested supported chromosome.
+  hla_vcf <- make_vcf(file.path(work, "unused-hla.vcf.gz"),
+    lengths = setNames(c(1000L, 100L), c("chr1", "HLA-A*01:01")), data_chrom = "chr1")
+  hla_spec <- spec; hla_spec$vcf <- hla_vcf
+  hla <- prepare_data_profile(hla_spec, app, state)
+  stopifnot(identical(hla$variant_resources$vcf_registry$chrom, "chr1"))
+  registry <- file.path(work, "explicit-registry.tsv")
+  utils::write.table(data.frame(chrom = "chr1", vcf = hla_vcf, build = "GRCh38"),
+    registry, sep = "\t", quote = FALSE, row.names = FALSE)
+  explicit_spec <- hla_spec; explicit_spec$vcf <- ""; explicit_spec$vcf_registry <- registry
+  exact <- prepare_data_profile(explicit_spec, app, state)
+  stopifnot(identical(exact$variant_resources$vcf_registry$chrom, "chr1"))
+  # Unsupported names with real indexed records cannot be silently discarded.
+  active_hla <- make_vcf(file.path(work, "active-hla.vcf.gz"),
+    lengths = setNames(c(1000L, 100L), c("chr1", "HLA-A*01:01")), data_chrom = "HLA-A*01:01")
+  active_spec <- spec; active_spec$vcf <- active_hla
+  source_expect_error(prepare_data_profile(active_spec, app, state), "data-bearing indexed contig")
+  # The original-header duplicate check remains effective even if native header
+  # normalization would otherwise discard a repeated declaration.
+  duplicate_vcf <- file.path(work, "duplicate-header.vcf.gz")
+  writeLines(c("##fileformat=VCFv4.2", "##contig=<ID=chr1,length=1000>",
+    "##contig=<ID=chr1,length=1000>",
+    paste(c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", "DNA_A", "DNA_B"), collapse = "\t")),
+    duplicate_vcf)
+  file.copy(paste0(vcf, ".tbi"), paste0(duplicate_vcf, ".tbi"))
+  duplicate_spec <- spec; duplicate_spec$vcf <- duplicate_vcf
+  source_expect_error(prepare_data_profile(duplicate_spec, app, state), "duplicate exact contig")
+  listing_warnings <- character()
+  listed <- withCallingHandlers(list_data_profiles(app, state), warning = function(w) {
+    listing_warnings <<- c(listing_warnings, conditionMessage(w)); invokeRestart("muffleWarning")
+  })
+  stopifnot(length(listing_warnings) == 0L)
+  stopifnot(nrow(listed) == 3L, bundle$id %in% listed$id, bundle$profile_dir %in% listed$profile_dir)
   # Distinct profiles have distinct job histories and cannot be loaded as another clone.
   other_spec <- custom_source_spec(label = "Second dataset", bam = bam_a, annotation_gtf = "", reference_fasta = "")
   other <- prepare_data_profile(other_spec, app, state)

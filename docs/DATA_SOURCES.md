@@ -14,7 +14,7 @@ GENCODE v48 is indexed once in this account's private resources and reused acros
 
 Choose one DNA input in **Data sources → Custom SCC files**:
 
-- An indexed `.vcf.gz`, `.vcf.bgz` or `.bcf` containing one or more chromosomes.
+- An indexed `.vcf.gz`, `.vcf.bgz` or `.bcf` containing one or more chromosomes. Automatic configuration uses contigs with records reported by the existing index, so unused header declarations do not block a normal chromosome file.
 - A tab-separated registry with columns `chrom`, `vcf`, `build`, with one row per unique literal chromosome. One multichromosome VCF may appear in several rows. VCF paths must be absolute. A readable `.tbi` or `.csi` must already exist beside each DNA file. See [vcf_registry.example.tsv](../examples/vcf_registry.example.tsv).
 
 Choose one matching rule:

@@ -316,6 +316,7 @@ list_data_profiles <- function(app_dir = getwd(), state_root = NULL) {
   paths <- list.dirs(file.path(root, "profiles"), recursive = FALSE, full.names = TRUE)
   answer <- lapply(paths, function(path) tryCatch({
     data_source_profile_path(path, normalizePath(app_dir), state_root)
+    if (!file.exists(file.path(path, "profile.rds"))) return(NULL)
     config <- readRDS(file.path(path, "profile.rds"))
     if (!identical(config$schema, "regshiny-source-profile-v1") || !identical(config$app_dir, normalizePath(app_dir)) ||
         !identical(config$owner_uid, data_source_uid())) return(NULL)

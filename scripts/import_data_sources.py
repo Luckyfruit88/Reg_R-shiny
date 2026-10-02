@@ -6,6 +6,7 @@ Individual sample mappings are written only under the private output directory.
 """
 import argparse
 import csv
+import gzip
 import hashlib
 import json
 import os
@@ -94,11 +95,36 @@ def bam_header(bam, samtools):
                 groups.append(attrs)
     if not contigs:
         raise ValueError("BAM has no reference dictionary.")
-    first = sorted(contigs)[0]
-    # Supplying a region requires the existing index; it cannot fall back to
-    # scanning the entire BAM. This proves index-open, not full index integrity.
-    run(samtools, ["view", "-c", str(bam), first + ":1-1"])
     return contigs, groups, hashlib.sha256(header.encode()).hexdigest()
+
+
+def reject_duplicate_vcf_contigs(path):
+    # bcftools may canonicalize repeated VCF header declarations. Check the
+    # original text header as well, stopping at #CHROM before any variant rows.
+    # BCF uses its native parsed reference dictionary instead.
+    if str(path).lower().endswith(".bcf"):
+        return
+    with open(str(path), "rb") as source:
+        compressed = source.read(2) == b"\x1f\x8b"
+    opener = gzip.open if compressed else open
+    names, header_bytes = set(), 0
+    with opener(str(path), "rt", encoding="utf-8") as source:
+        for line in source:
+            header_bytes += len(line.encode("utf-8"))
+            if header_bytes > 64 * 1024 * 1024:
+                raise ValueError("VCF header exceeds 64 MiB.")
+            if line.startswith("#CHROM"):
+                return
+            if line.startswith("##contig=<"):
+                match = re.search(r"(?:<|,)ID=([^,>]+)", line)
+                if match:
+                    name = match.group(1)
+                    if name in names:
+                        raise ValueError("VCF has duplicate exact contig names in its original header.")
+                    names.add(name)
+            elif not line.startswith("#"):
+                raise ValueError("VCF sample header is missing before data rows.")
+    raise ValueError("VCF sample header is missing.")
 
 
 def vcf_header(path, bcftools):
@@ -109,6 +135,7 @@ def vcf_header(path, bcftools):
     if index is None:
         raise ValueError("A configured VCF/BCF has no readable existing index.")
     before = [stat(path), stat(index)]
+    reject_duplicate_vcf_contigs(path)
     header = run(bcftools, ["view", "--no-version", "-h", str(path)])
     if before != [stat(path), stat(index)]:
         raise ValueError("VCF/index changed while its header was being inspected.")
@@ -126,18 +153,53 @@ def vcf_header(path, bcftools):
         length = re.search(r"(?:<|,)length=(\d+)", line)
         if match:
             name = match.group(1)
-            if name in contigs or not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$", name):
-                raise ValueError("VCF has duplicate or unsupported exact contig names.")
+            if name in contigs:
+                raise ValueError("VCF has duplicate exact contig names.")
             contigs[name] = int(length.group(1)) if length else None
     if not contigs:
         raise ValueError("VCF header must declare its chromosome names.")
-    first = sorted(contigs)[0]
-    run(bcftools, ["query", "--regions-overlap", "0", "-r", first + ":1-1",
-                   "-f", "%CHROM\\t%POS\\n", str(path)])
-    if before != [stat(path), stat(index)]:
-        raise ValueError("VCF/index changed during the bounded index-open probe.")
     return {"samples": samples, "contigs": contigs, "index": index,
-            "header_sha256": hashlib.sha256(header.encode()).hexdigest()}
+            "source_states": before, "header_sha256": hashlib.sha256(header.encode()).hexdigest()}
+
+
+def indexed_vcf_contigs(path, info, bcftools):
+    """Discover data-bearing contigs using only existing index statistics.
+
+    Whole-genome headers often retain unused HLA/alternate-reference names.
+    Those declarations do not mean the individual chromosome VCF has records
+    there. Unknown record counts are not replaced by a full-file scan.
+    """
+    text = run(bcftools, ["index", "-s", str(path)])
+    records, seen = {}, set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError("Unexpected VCF index statistics; provide an explicit VCF registry.")
+        chrom, length_text, count_text = fields
+        if chrom in seen:
+            raise ValueError("VCF index statistics contain duplicate exact contig names.")
+        seen.add(chrom)
+        if not re.match(r"^[0-9]+$", count_text):
+            raise ValueError("VCF index record counts are unavailable; provide an explicit VCF registry.")
+        count = int(count_text)
+        if count == 0:
+            continue
+        if chrom not in info["contigs"]:
+            raise ValueError("A data-bearing indexed contig is absent from the exact VCF header.")
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$", chrom):
+            raise ValueError("A data-bearing indexed contig has an unsupported query name; provide an explicit registry selecting supported contigs. Names are never changed.")
+        header_length = info["contigs"][chrom]
+        index_length = int(length_text) if re.match(r"^[0-9]+$", length_text) else None
+        if header_length is not None and index_length is not None and header_length != index_length:
+            raise ValueError("VCF header and index contig lengths differ.")
+        records[chrom] = count
+    if not records:
+        raise ValueError("The VCF index has no contigs with recorded variants; provide an explicit registry if an empty declared region is intentional.")
+    if info["source_states"] != [stat(path), stat(info["index"])]:
+        raise ValueError("VCF/index changed during indexed contig discovery.")
+    return records
 
 
 def main():
@@ -178,8 +240,10 @@ def main():
     if args.vcf:
         path = readable(args.vcf)
         cache[str(path)] = vcf_header(path, args.bcftools)
+        indexed = indexed_vcf_contigs(path, cache[str(path)], args.bcftools)
+        cache[str(path)]["indexed_record_counts"] = indexed
         registry = [{"chrom": chrom, "vcf": str(path), "build": args.build}
-                    for chrom in sorted(cache[str(path)]["contigs"])]
+                    for chrom in sorted(indexed)]
     elif args.vcf_registry:
         registry = read_tsv(readable(args.vcf_registry), ("chrom", "vcf", "build"))
         if len(set(row["chrom"] for row in registry)) != len(registry):
@@ -193,10 +257,16 @@ def main():
         info = cache[str(path)]
         if row["chrom"] not in info["contigs"]:
             raise ValueError("Registry chromosome is absent from its exact VCF header.")
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$", row["chrom"]):
+            raise ValueError("A selected registry contig has an unsupported query name; chromosome names are never changed.")
+        run(args.bcftools, ["query", "--regions-overlap", "0", "-r", row["chrom"] + ":1-1",
+                           "-f", "%CHROM\\t%POS\\n", str(path)])
+        if info["source_states"] != [stat(path), stat(info["index"])]:
+            raise ValueError("VCF/index changed during the selected-contig index-open probe.")
         row["length_bp"] = info["contigs"][row["chrom"]]
         row["index"] = str(info["index"])
     for path, info in sorted(cache.items()):
-        vcf_states.extend([stat(path), stat(info["index"])])
+        vcf_states.extend(info["source_states"])
     vcf_samples = set(sample for info in cache.values() for sample in info["samples"])
     mappings, exclusions = [], []
     if registry:
@@ -242,6 +312,16 @@ def main():
             raise ValueError("BAM and VCF have no exact chromosome names in common; aliases are not inferred.")
         if any(declared_lengths[chrom] is not None and declared_lengths[chrom] != contigs[chrom] for chrom in shared):
             raise ValueError("BAM/VCF chromosome lengths differ; the reference assembly is incompatible.")
+        # Prefer the selected DNA/RNA intersection, rather than an unrelated
+        # unused header declaration. BAM-only input still requires an exact name
+        # that the existing Reg_Shiny regional-query contract supports.
+        probe_contigs = sorted(shared) if registry else sorted(
+            chrom for chrom in contigs if re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$", chrom))
+        if not probe_contigs:
+            raise ValueError("The BAM has no chromosome name supported by regional queries; names are never changed.")
+        # Explicit regions require the existing index and cannot fall back to a
+        # whole BAM scan. This proves index-open, not full index consistency.
+        run(args.samtools, ["view", "-c", str(bam), probe_contigs[0] + ":1-1"])
         if registry and args.mapping_mode == "read_group":
             if not groups or any(not row.get("ID") or not row.get("SM") for row in groups) or len({row["ID"] for row in groups}) != len(groups):
                 raise ValueError("Every BAM read group needs a unique ID and nonempty SM for exact matching.")
@@ -270,6 +350,9 @@ def main():
         "source_states": vcf_states + bam_states, "bam_headers": bam_audit,
         "vcf_headers": [{"vcf": path, "header_sha256": info["header_sha256"], "sample_count": len(info["samples"])}
                         for path, info in sorted(cache.items())],
+        "registry_selection": "Single-file import uses data-bearing contigs reported by the existing index; explicit registries select exact user-specified header contigs.",
+        "indexed_record_counts": {path: info["indexed_record_counts"] for path, info in sorted(cache.items())
+                                  if "indexed_record_counts" in info},
         "input_files": [{"path": str(readable(path)), "sha256": sha(readable(path))}
                         for path in (args.mapping, args.vcf_registry) if path],
         "identity_policy": "Explicit mapping or exact BAM RG SM / VCF sample equality. No filename/participant-ID inference.",
