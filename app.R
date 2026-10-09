@@ -93,7 +93,7 @@ single_bam_ui <- function(id, bam_choices = character()) {
     helpText("Near matches must satisfy both boundaries and exclude the exact junction. Select a row in the Junctions table to set the target."),
     uiOutput(ns("display_control"))
   ),
-  uiOutput(ns("status")),
+  uiOutput(ns("status"), role = "status", `aria-live` = "polite"),
   uiOutput(ns("metrics")),
   p(textOutput(ns("denominator_note"))),
   navset_card_tab(
@@ -270,12 +270,13 @@ single_bam_server <- function(id, bundle, is_active = reactive(TRUE)) {
   })
   output$display_control <- renderUI({
     r <- result()
-    sliderInput("display", "Display window (analysis interval stays fixed)", min = r$config$start1,
+    sliderInput(session$ns("display"), "Display window (analysis interval stays fixed)", min = r$config$start1,
                 max = r$config$end1, value = c(r$config$start1, r$config$end1), step = 1, sep = "")
   })
   view_range <- reactive({
     r <- result(); x <- input$display
-    if (is.null(x) || length(x) != 2L || x[[1L]] < r$config$start1 || x[[2L]] > r$config$end1)
+    if (is.null(x) || length(x) != 2L || any(!is.finite(x)) ||
+        x[[1L]] >= x[[2L]] || x[[1L]] < r$config$start1 || x[[2L]] > r$config$end1)
       c(r$config$start1, r$config$end1) else x
   })
   annotation_server("single_annotation", resources = annotation_resources, annotation_file = annotation_file,
@@ -402,7 +403,8 @@ single_bam_server <- function(id, bundle, is_active = reactive(TRUE)) {
 
 ui <- page_navbar(
   title = "Reg_Shiny", id = "workspace", selected = "Data sources", fillable = FALSE,
-  header = uiOutput("active_data_banner"),
+  header = tagList(tags$head(tags$link(rel = "stylesheet", href = "frontend.css")),
+    uiOutput("active_data_banner", role = "status", `aria-live` = "polite")),
   nav_panel("Data sources", data_sources_ui("sources")),
   nav_panel("WGS genotype comparison", uiOutput("variant_workspace")),
   nav_panel("Single BAM / demo", uiOutput("single_workspace"))
@@ -438,7 +440,10 @@ server <- function(input, output, session) {
   output$active_data_banner <- renderUI({
     b <- current_view()$bundle
     if (identical(b$id, "unconfigured")) return(helpText("Prepare a dataset in Data sources. The synthetic demo remains available while preparation runs."))
-    div(class = "alert alert-secondary", strong(paste("Connected dataset:", b$label)), " · source identity ", code(b$id))
+    div(class = "regshiny-context",
+      strong(paste("Connected dataset:", b$label)),
+      if (!inherits(b$variant_resources, "error")) span(" · ", b$variant_resources$build),
+      tags$details(tags$summary("Source identity"), code(b$id)))
   })
   output$variant_workspace <- renderUI({
     v <- current_view()

@@ -79,6 +79,8 @@ shiny::testServer(variant_server,
     session$setInputs(query = "chr1:200", run = 3)
     stopifnot(isolate(results_stale()), isolate(result())$variant$pos1 == 100L)
     stopifnot(grepl("Inputs have changed", html_text(output$status), fixed = TRUE))
+    stopifnot(grepl("Viewing: chr1:100:A:T", html_text(output$view_context), fixed = TRUE))
+    stopifnot(grepl("Unapplied form changes", html_text(output$view_context), fixed = TRUE))
     stopifnot(grepl("Run Find variant", html_text(output$lookup_status), fixed = TRUE))
     # A failed fresh lookup invalidates selection; old results remain labelled stale.
     session$setInputs(query = "chr1:999", lookup = 2)
@@ -300,6 +302,9 @@ shiny::testServer(variant_server, args=batch_args, {
     strand_mode="XS",exclude_dup=FALSE,nh1=FALSE,sampling_mode="all",batch_queries=paste(c(
       "chr1:200","chr1:100","chr1:100:A:T","chr1:200:A:G","bad coordinate","chr1:300","chr1:210"),collapse="\n"))
   session$setInputs(batch_submit=1)
+  stopifnot(batch_memory$counter == 0L, isolate(batch_task$status()) == "initial")
+  stopifnot(!is.null(isolate(batch_review())))
+  session$setInputs(batch_confirm=1)
   await_task(batch_task,session)
   out <- isolate(batch_outcomes())
   stopifnot(identical(out$outcome,c("SUBMITTED","AMBIGUOUS_ALLELES","SUBMITTED","DUPLICATE_IN_BATCH","LOOKUP_FAILED","NOT_FOUND","PREPARATION_FAILED")))
@@ -340,6 +345,51 @@ shiny::testServer(variant_server,args=batch_args,{
   await_task(single_submit_task,session)
   stopifnot(isolate(active_job())==old_path,isolate(result())$variant$pos1==200L)
   stopifnot(isolate(single_receipt())$variant$pos1==100L)
+})
+# Resource confirmation is enforced on the server and is consumed once.
+shiny::testServer(variant_server, args = batch_args, {
+  session$setInputs(flank = 50, mapq = 20, baseq = 0, anchor = 8,
+    min_intron = 70, max_intron = 500000, strand_mode = "XS",
+    exclude_dup = FALSE, nh1 = FALSE, sampling_mode = "all", batch_queries = "chr1:200")
+  before <- batch_memory$counter
+  session$setInputs(batch_confirm = 1)
+  stopifnot(batch_memory$counter == before, isolate(batch_task$status()) == "initial")
+  session$setInputs(batch_submit = 1)
+  session$setInputs(batch_cancel = 1)
+  session$setInputs(batch_confirm = 2)
+  stopifnot(batch_memory$counter == before, is.null(isolate(batch_review())))
+  session$setInputs(batch_submit = 2)
+  session$setInputs(flank = 100)
+  session$setInputs(batch_confirm = 3)
+  stopifnot(batch_memory$counter == before, isolate(batch_task$status()) == "initial")
+  stopifnot(grepl("Inputs changed after review", html_text(output$batch_review_status), fixed = TRUE))
+  session$setInputs(batch_submit = 3)
+  session$setInputs(batch_queries = "chr1:100:A:T")
+  session$setInputs(batch_confirm = 4)
+  stopifnot(batch_memory$counter == before, isolate(batch_task$status()) == "initial")
+  session$setInputs(batch_submit = 4)
+  session$setInputs(batch_confirm = 5)
+  await_task(batch_task, session)
+  stopifnot(batch_memory$counter == before + 1L, is.null(isolate(batch_review())))
+  submitted <- isolate(batch_snapshot())
+  stopifnot(submitted$settings$flank == 100L, submitted$lines$query == "chr1:100:A:T")
+  session$setInputs(batch_confirm = 6)
+  session$flushReact()
+  stopifnot(batch_memory$counter == before + 1L)
+})
+# A dataset switch invalidates a pending review without cancelling old jobs.
+review_enabled <- reactiveVal(TRUE)
+review_args <- c(batch_args, list(is_active = reactive(review_enabled())))
+shiny::testServer(variant_server, args = review_args, {
+  session$setInputs(flank = 50, mapq = 20, baseq = 0, anchor = 8,
+    min_intron = 70, max_intron = 500000, strand_mode = "XS",
+    exclude_dup = FALSE, nh1 = FALSE, sampling_mode = "all", batch_queries = "chr1:200")
+  before <- batch_memory$counter
+  session$setInputs(batch_submit = 1)
+  stopifnot(!is.null(isolate(batch_review())))
+  review_enabled(FALSE); session$flushReact()
+  session$setInputs(batch_confirm = 1)
+  stopifnot(is.null(isolate(batch_review())), batch_memory$counter == before)
 })
 unlink(c(fixture_file, job_fixture_file, batch_variant_file))
 cat("VARIANT_UI_STATE_TESTS_OK\n")

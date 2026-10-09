@@ -83,7 +83,7 @@ variant_ui <- function(id) {
         numericInput(ns("sample_cap"), "Preview: maximum RNA samples per genotype", 3, min = 1, max = 10),
         helpText("Preview only: first sample IDs in sorted order within each called genotype, up to this cap and 30 total. Selection does not depend on RNA outcomes.")),
       conditionalPanel(sprintf("input['%s'] === 'all'", ns("sampling_mode")),
-        helpText("All matched BAMs with complete DNA genotype calls are processed. The SCC job and sample checkpoints persist after the browser is closed; return to a saved job below to see progress or results.")),
+        helpText("All matched BAMs with complete DNA genotype calls are processed. The SCC job and sample checkpoints persist after the browser is closed; open the Jobs tab to see progress or results.")),
       tags$details(tags$summary("Read and junction filters"),
         numericInput(ns("mapq"), "Minimum MAPQ", 20, min = 0, max = 255),
         numericInput(ns("baseq"), "Minimum base quality (depth / RNA bases)", 0, min = 0, max = 93),
@@ -95,39 +95,43 @@ variant_ui <- function(id) {
         checkboxInput(ns("nh1"), "Require NH == 1 (exclude missing NH)", FALSE),
         helpText("Always exclude unmapped, secondary, supplementary and QC-failed alignments. Paired ends count separately.")),
       bslib::input_task_button(ns("run"), "Compare genotypes"),
-      conditionalPanel(sprintf("input['%s'] === 'all'", ns("sampling_mode")),
-        hr(), h5("3 · Independent variant jobs"),
-        textAreaInput(ns("batch_queries"), "Batch variants (one per line)", rows = 5,
-          placeholder = "chr21:14288395:G:A\nchr17:3156517:T:C"),
-        bslib::input_task_button(ns("batch_submit"), "Submit independent 16-core jobs",
-          onclick = "window.scrollTo({top: 0, behavior: 'smooth'});"),
-        helpText("Use CHROM:POS or CHROM:POS:REF:ALT. Ambiguous positions require explicit alleles. Each resolved variant receives its own 16-core allocation, matching, logs and results; the 16 cores are not shared between variants. Current interval/filter settings are frozen for each submission.")),
       hr(),
-      h5("Saved full-comparison jobs"),
-      selectInput(ns("saved_job"), "Your recent jobs", choices = character()),
-      actionButton(ns("refresh_jobs"), "Refresh jobs"),
-      actionButton(ns("open_job"), "Open saved job"),
-      bslib::input_task_button(ns("resume_job"), "Resume interrupted job"),
-      helpText("Opening displays the job's submitted variant and parameters. Resume reuses verified sample checkpoints; completed results remain available. Search again to submit a new comparison."),
-      hr(),
+      actionButton(ns("show_jobs"), "Batch submissions and saved jobs"),
+      helpText("Use Jobs to review batch resources, reopen a result, or resume an interrupted job."),
       helpText("DNA GT defines each group. Missing and partial calls remain in the audit and are excluded from RNA comparison. RNA coverage and junctions are descriptive evidence, not a formal splicing association test.")
     ),
-    uiOutput(ns("lookup_status")),
+    uiOutput(ns("view_context"), role = "status", `aria-live` = "polite"),
+    uiOutput(ns("lookup_status"), role = "status", `aria-live` = "polite"),
     uiOutput(ns("submission_status")),
     uiOutput(ns("resume_status")),
     uiOutput(ns("job_progress")),
-    uiOutput(ns("status")),
+    uiOutput(ns("status"), role = "status", `aria-live` = "polite"),
     uiOutput(ns("selected_variant")),
     bslib::navset_card_tab(id = ns("result_tabs"),
       bslib::nav_panel("Genotype comparison",
         h5("Observed genotype groups and sample accounting"),
         DT::DTOutput(ns("groups")),
-        p("dna_n counts calls in the VCF; available_n counts calls linked to the RNA manifest. selected_n is the actual number requested, analyzed_n succeeded, and failed_n failed. Missing RNA links and incomplete DNA calls are separate, potentially overlapping exclusions. An unavailable BAM or index remains a recorded failure. A genotype absent from the VCF is not invented, and a missing call is not reference homozygous."),
+        tags$details(tags$summary("Sample accounting definitions and exclusions"),
+          p("dna_n counts calls in the VCF; available_n counts calls linked to the RNA manifest. selected_n is the actual number requested, analyzed_n succeeded, and failed_n failed. Missing RNA links and incomplete DNA calls are separate, potentially overlapping exclusions. An unavailable BAM or index remains a recorded failure. A genotype absent from the VCF is not invented, and a missing call is not reference homozygous.")),
         bslib::card(bslib::card_header("Mean RNA read depth per successful sample"), plotOutput(ns("depth_plot"), height = 320)),
         bslib::card(bslib::card_header("Junction support by genotype · top 20 per group"), uiOutput(ns("junction_chart"))),
         annotation_track_ui(ns("annotation")),
         p("Depth includes zero-coverage positions. Junction means include successful samples with zero support; failed samples are excluded and shown above. These raw counts are not normalized for library size. Arcs are not transcript annotations.")),
       bslib::nav_panel("Jobs",
+        bslib::layout_columns(col_widths = c(6, 6),
+          bslib::card(bslib::card_header("Batch submission"),
+            textAreaInput(ns("batch_queries"), "Batch variants (one per line)", rows = 5,
+              placeholder = "chr21:14288395:G:A\nchr17:3156517:T:C"),
+            bslib::input_task_button(ns("batch_submit"), "Review batch and resources"),
+            uiOutput(ns("batch_review_status"), role = "status", `aria-live` = "polite"),
+            helpText("Batch jobs always use all matched BAMs, even when the single-variant form is set to preview. The current interval and filters apply to every batch entry. Review the maximum resource request before confirming; no jobs are submitted by the review button.")),
+          bslib::card(bslib::card_header("Saved full-comparison jobs"),
+            selectInput(ns("saved_job"), "Your recent jobs", choices = character()),
+            div(class = "regshiny-actions",
+              actionButton(ns("refresh_jobs"), "Refresh jobs"),
+              actionButton(ns("open_job"), "Open saved job"),
+              bslib::input_task_button(ns("resume_job"), "Resume interrupted job")),
+            helpText("Opening shows the job's frozen variant and parameters. Resume reuses verified checkpoints; editing the analysis form never changes a saved job."))),
         h5("Independent full-cohort jobs"),
         p("Every new full job requests 16 cores. Several jobs may run concurrently when the scheduler allocates their separate resources. Select a row and open that job's frozen result."),
         DT::DTOutput(ns("jobs_table")), actionButton(ns("open_dashboard_job"), "Open selected job"),
@@ -398,32 +402,94 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
         variant_batch_submit(e, res, lines, settings, identity, source_file, variant_source, jobs_source, root, frozen_controls)
       }, seed = TRUE)
     }) |> bslib::bind_task_button("batch_submit")
+    batch_review <- reactiveVal(NULL)
+    batch_review_error <- reactiveVal(NULL)
+    batch_inputs <- function() {
+      if (!resource_ok) stop(conditionMessage(resources))
+      if (is.null(job_api)) stop("Persistent SCC jobs are not configured.")
+      raw <- strsplit(if (is.null(input$batch_queries)) "" else input$batch_queries, "\n", fixed = TRUE)[[1L]]
+      rows <- data.frame(input_line = seq_along(raw), query = trimws(raw), stringsAsFactors = FALSE)
+      rows <- rows[nzchar(rows$query), , drop = FALSE]
+      if (!nrow(rows)) stop("Enter at least one variant coordinate, one per line.")
+      flank <- backend$int_scalar(input$flank, "Flank", 50, 124999)
+      settings <- list(demo = FALSE, bam = "", chrom = "validation", start1 = 1L, end1 = 101L,
+        mapq = input$mapq, baseq = input$baseq, anchor = input$anchor, min_intron = input$min_intron,
+        max_intron = input$max_intron, strand_mode = input$strand_mode,
+        exclude_duplicates = input$exclude_dup, nh1_only = input$nh1)
+      settings <- backend$validate_config(settings); settings$flank <- flank
+      frozen <- controls(); frozen$sampling_mode <- "all"; frozen$sample_cap <- NULL
+      list(lines = rows, settings = settings, controls = frozen)
+    }
+    observeEvent(input$show_jobs, {
+      req(is_active())
+      bslib::nav_select("result_tabs", "Jobs", session = session)
+    })
     observeEvent(input$batch_submit, {
       req(is_active())
-      problem <- tryCatch({
-        if (!resource_ok) stop(conditionMessage(resources))
-        if (is.null(job_api)) stop("Persistent SCC jobs are not configured.")
-        raw <- strsplit(if (is.null(input$batch_queries)) "" else input$batch_queries, "\n", fixed = TRUE)[[1L]]
-        rows <- data.frame(input_line = seq_along(raw), query = trimws(raw), stringsAsFactors = FALSE)
-        rows <- rows[nzchar(rows$query), , drop = FALSE]
-        if (!nrow(rows)) stop("Enter at least one variant coordinate, one per line.")
-        flank <- backend$int_scalar(input$flank, "Flank", 50, 124999)
-        settings <- list(demo = FALSE, bam = "", chrom = "validation", start1 = 1L, end1 = 101L,
-          mapq = input$mapq, baseq = input$baseq, anchor = input$anchor, min_intron = input$min_intron,
-          max_intron = input$max_intron, strand_mode = input$strand_mode,
-          exclude_duplicates = input$exclude_dup, nh1_only = input$nh1)
-        settings <- backend$validate_config(settings); settings$flank <- flank
-        frozen <- controls(); frozen$sampling_mode <- "all"; frozen$sample_cap <- NULL
-        batch_snapshot(list(lines = rows, settings = settings, controls = frozen))
-        batch_task$invoke(resources, rows, settings, source_identity, frozen,
-          backend_file, variant_file, job_source, job_root)
+      if (batch_task$status() == "running") return()
+      batch_review(NULL); batch_review_error(NULL)
+      tryCatch({
+        snapshot <- batch_inputs()
+        batch_review(snapshot)
+        maximum_jobs <- length(unique(snapshot$lines$query))
         bslib::nav_select("result_tabs", "Jobs", session = session)
+        showModal(modalDialog(title = "Review full-cohort batch resource request", size = "l", easyClose = FALSE,
+          p(strong("No jobs have been submitted by this review.")),
+          p("Dataset: ", if (is.null(source_identity)) "Current configured dataset" else source_identity$label,
+            " · assembly: ", resources$build),
+          p(nrow(snapshot$lines), " non-empty input lines; ", maximum_jobs, " unique query strings."),
+          div(class = "alert alert-warning",
+            strong(paste0("Up to ", maximum_jobs, " independent jobs × 16 cores = ", 16 * maximum_jobs, " requested cores.")),
+            p("This is an upper bound, not a validated variant count or a promise of simultaneous allocation. Exact VCF lookup, allele ambiguity, record-level deduplication and source checks run after confirmation; they can reduce the submitted job count.")),
+          p("All matched BAMs with complete DNA calls. Analysis flank: ±", snapshot$settings$flank, " bp."),
+          tags$details(tags$summary("Review query lines and frozen filters"),
+            tags$pre(paste(snapshot$lines$query, collapse = "\n")),
+            tags$pre(paste(capture.output(str(snapshot$settings)), collapse = "\n"))),
+          p("Each accepted job persists independently of this browser. Previously submitted jobs are not cancelled or rolled back. This review does not detect duplicates in your earlier batches."),
+          footer = tagList(actionButton(session$ns("batch_cancel"), "Back without submitting"),
+            actionButton(session$ns("batch_confirm"), "Confirm and submit full jobs", class = "btn-primary"))))
+      }, error = function(e) batch_review_error(conditionMessage(e)))
+      bslib::update_task_button("batch_submit", state = "ready", session = session)
+    })
+    observeEvent(input$batch_cancel, {
+      req(is_active())
+      batch_review(NULL); batch_review_error(NULL)
+      removeModal()
+    })
+    observeEvent(is_active(), {
+      if (!isTRUE(is_active()) && !is.null(batch_review())) {
+        batch_review(NULL)
+        removeModal()
+      }
+    })
+    observeEvent(input$batch_confirm, {
+      req(is_active())
+      # The server, not just the confirmation dialog, prevents unreviewed,
+      # stale and repeated submissions. Consume approval before any side effect.
+      if (batch_task$status() == "running") return()
+      snapshot <- batch_review()
+      batch_review(NULL)
+      removeModal()
+      problem <- tryCatch({
+        if (is.null(snapshot)) stop("Review the batch before confirming a submission.")
+        if (!identical(snapshot, batch_inputs()))
+          stop("Inputs changed after review. Review the batch and resources again; no new jobs were submitted.")
+        batch_review_error(NULL)
+        batch_snapshot(snapshot)
+        bslib::update_task_button("batch_submit", state = "busy", session = session)
+        batch_task$invoke(resources, snapshot$lines, snapshot$settings, source_identity, snapshot$controls,
+          backend_file, variant_file, job_source, job_root)
         NULL
       }, error = function(e) conditionMessage(e))
       if (!is.null(problem)) {
-        showNotification(problem, type = "error", duration = 12)
+        batch_review_error(problem)
         bslib::update_task_button("batch_submit", state = "ready", session = session)
       }
+    })
+    output$batch_review_status <- renderUI({
+      if (!is.null(batch_review_error())) return(div(class = "alert alert-warning", batch_review_error()))
+      if (!is.null(batch_review())) return(p("Resource review is open. No new jobs have been submitted; confirm or go back."))
+      p("Review first, then confirm. Each resolved variant requests its own 16 cores.")
     })
     observeEvent(batch_task$status(), {
       req(is_active())
@@ -631,7 +697,11 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       p <- state$progress
       num <- function(x) if (is.null(x) || length(x) != 1L || is.na(x)) "pending" else format(x, big.mark = ",", trim = TRUE)
       v <- active_job_variant()
-      tagList(div(class = "alert alert-info",
+      status_class <- if (!is.null(state$error) || !is.null(full_result_error())) "danger" else
+        if (isTRUE(state$result_ready)) {
+          if (!is.null(p$failed) && is.finite(p$failed) && p$failed > 0) "warning" else "success"
+        } else if (grepl("FAIL|INTERRUPT|UNAVAILABLE|UNKNOWN", state$status)) "warning" else "info"
+      tagList(div(class = paste("alert alert-", status_class, sep = ""),
         strong(paste0("All matched BAMs · ", state$status)),
         if (!is.null(state$job_id)) paste0(" · SCC job ", state$job_id),
         if (!is.null(state$request$cores)) paste0(" · ", state$request$cores, " dedicated cores; ", state$request$workers, " sample workers"),
@@ -730,6 +800,33 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
             if (full) "All matched BAMs completed successfully. " else "Exploratory subset analysis completed. ",
         if (any_failed) "Some selected samples failed and are excluded from group means; failures remain in the sample audit."),
         if (length(r$warnings)) div(class = "alert alert-warning", paste(unique(r$warnings), collapse = "; ")))
+    })
+    output$view_context <- renderUI({
+      req(is_active())
+      mode <- active_mode()
+      if (is.null(mode)) return(div(class = "regshiny-context",
+        strong("No analysis result selected"),
+        p("Find a variant and compare matched RNA samples, or open an existing result in Jobs.")))
+      cfg <- launched_config()
+      variant <- if (identical(mode, "all")) active_job_variant() else
+        tryCatch(result()$variant, error = function(e) NULL)
+      label <- if (!is.null(variant)) paste(variant$chrom[[1L]], variant$pos1[[1L]],
+        variant$ref[[1L]], variant$alt[[1L]], sep = ":") else
+        if (!is.null(launched_controls())) launched_controls()$query else "Submitted analysis"
+      state_label <- if (identical(mode, "all")) {
+        state <- job_state()
+        if (is.null(state)) "Reading job state" else state$status
+      } else analysis_task$status()
+      div(class = "regshiny-context",
+        strong(paste("Viewing:", label)),
+        p(if (!is.null(source_identity)) paste0(source_identity$label, " · "),
+          if (!is.null(variant)) paste0(variant$build[[1L]], " · "),
+          if (identical(mode, "all")) "Full cohort" else "Exploratory preview",
+          " · ", state_label,
+          if (!is.null(active_job())) paste0(" · ", basename(active_job()))),
+        if (!is.null(cfg)) p("Frozen analysis interval: ", cfg$chrom, ":", cfg$start1, "–", cfg$end1),
+        if (restored_job()) p("Saved snapshot. The form does not edit this job; plots and downloads belong to this snapshot.") else
+          if (results_stale()) p(class = "regshiny-pending", "Unapplied form changes. The viewed analysis retains its submitted variant and parameters."))
     })
     output$selected_variant <- renderUI({
       r <- result(); v <- r$variant
