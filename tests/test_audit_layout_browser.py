@@ -123,6 +123,14 @@ def main() -> None:
             set_length(page, size)
             check(page, f"desktop-{size}-rows", results)
         set_length(page, 10)
+        horizontal = page.evaluate("""() => ['samples','genotypes'].map(field => {
+          const body=document.querySelector('#audit-'+field+' .dataTables_scrollBody');
+          body.scrollLeft=body.scrollWidth;
+          return {offset:body.scrollLeft, overflow:getComputedStyle(body).overflowX};
+        })""")
+        assert all(x["offset"] > 0 and x["overflow"] in ("auto", "scroll") for x in horizontal)
+        check(page, "horizontal-scroll-keeps-all-columns", results)
+        page.evaluate("""() => document.querySelectorAll('.dataTables_scrollBody').forEach(e=>e.scrollLeft=0)""")
         page.locator('#audit-samples .dataTables_paginate .next').click()
         page.wait_for_function("""() => document.querySelector('#audit-samples .dataTables_info').textContent.includes('11')""")
         check(page, "next-page", results)
@@ -131,13 +139,16 @@ def main() -> None:
         for term in ("synthetic-003", "NO-SUCH-SYNTHETIC-SAMPLE"):
             for field in ("samples", "genotypes"):
                 page.locator(f'#audit-{field} .dataTables_filter input').fill(term)
-            page.wait_for_function("""() => ['samples','genotypes'].every(field =>
-              document.querySelectorAll('#audit-' + field + ' .dataTables_scrollBody tbody tr').length === 1)""")
-            page.wait_for_timeout(600)
+            expected = 0 if term.startswith("NO-SUCH") else 1
+            page.wait_for_function("""count => ['samples','genotypes'].every(field =>
+              jQuery('#audit-' + field + ' .dataTables_scrollBody table').DataTable().page.info().recordsDisplay === count)""",
+              arg=expected)
+            page.wait_for_timeout(150)
             check(page, "search-" + term, results)
         for field in ("samples", "genotypes"):
             page.locator(f'#audit-{field} .dataTables_filter input').fill("")
-        page.wait_for_timeout(700)
+        page.wait_for_function("""() => ['samples','genotypes'].every(field =>
+          jQuery('#audit-' + field + ' .dataTables_scrollBody table').DataTable().page.info().recordsDisplay === 75)""")
         page.locator(OTHER).click()
         page.locator(AUDIT).click()
         page.wait_for_timeout(300)

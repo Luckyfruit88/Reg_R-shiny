@@ -43,7 +43,8 @@
    imposing a row-height guess, or altering DT's horizontal scrolling. */
 .datatables[id$="-samples"],
 .datatables[id$="-genotypes"] {
-  flex: 0 0 auto;
+  /* DT loads a more-specific 400px flex-basis rule after the app stylesheet. */
+  flex: 0 0 auto !important;
   height: auto !important;
   min-width: 0;
   display: flow-root;
@@ -57,4 +58,11 @@
 .datatables[id$="-samples"] + h5 {
   padding-block-start: 1rem;
   border-block-start: 1px solid var(--bs-border-color, #d5dce2);
+}
+
+/* Keep identifiers and server paths on one line; the existing DT scrollX
+   container retains access to every column and the complete cell value. */
+.datatables[id$="-samples"] table.dataTable,
+.datatables[id$="-genotypes"] table.dataTable {
+  white-space: nowrap;
 }
