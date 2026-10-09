@@ -55,7 +55,7 @@ def problems(geometry: dict) -> list[str]:
 
 def ready(page) -> None:
     page.locator(AUDIT).click()
-    page.wait_for_function("""() => window.jQuery &&
+    page.wait_for_function("""() => window.jQuery && jQuery.fn && jQuery.fn.dataTable &&
       jQuery.fn.dataTable.isDataTable(document.querySelector('#audit-samples .dataTables_scrollBody table')) &&
       jQuery.fn.dataTable.isDataTable(document.querySelector('#audit-genotypes .dataTables_scrollBody table')) &&
       document.querySelectorAll('#audit-samples .dataTables_scrollBody tbody tr').length === 10 &&
