@@ -58,3 +58,9 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 更新时先停止 app，在本 clone 的 Terminal 中执行 `git pull --ff-only`，然后重新启动。更新不会主动删除私有缓存和作业；重连时仍检查源文件身份。
 
 [测试与验收说明](docs/VALIDATION.md) · [完整指标定义](docs/METRICS.md)
+
+## 许可证
+
+Reg_Shiny 的源代码和文档采用 [MIT 许可证](LICENSE)。上游来源与许可声明见 [第三方声明](THIRD_PARTY_NOTICES.txt)。
+
+软件许可证不授予 FHS 或其他受控数据、BAM/VCF 文件及外部参考资源的访问或再分发权；这些资源仍遵循各自的访问与使用条款。第三方软件依赖保留各自的许可证。

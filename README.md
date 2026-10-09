@@ -60,3 +60,9 @@ The repository includes synthetic native-tool, backend, source-import, asynchron
 BAM counts use retained primary alignment records (paired ends separately), with explicit index, coordinate and reference checks. NA and measured zero remain different. RNA base observations do not replace DNA genotype calls; inferred GT/AG changes apply only to the selected SNV and do not reconstruct an allele-phased RNA haplotype. See [METRICS.md](docs/METRICS.md) for complete definitions.
 
 GENCODE source: [human release 48](https://www.gencodegenes.org/human/release_48.html). Native tools: [RegTools](https://github.com/griffithlab/regtools), [samtools](https://www.htslib.org/), [bcftools](https://samtools.github.io/bcftools/).
+
+## License
+
+Reg_Shiny source code and documentation are licensed under the [MIT License](LICENSE). Upstream attribution is recorded in [third-party notices](THIRD_PARTY_NOTICES.txt).
+
+This software license does not grant access to or rights to redistribute FHS or other controlled datasets, BAM/VCF files, or external reference resources. Their own access and reuse terms apply. Third-party software dependencies retain their respective licenses.
