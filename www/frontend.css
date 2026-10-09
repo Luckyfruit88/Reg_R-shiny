@@ -34,3 +34,27 @@
   .regshiny-context { padding: 0.85rem; }
   .regshiny-actions > .btn { width: 100%; white-space: normal; }
 }
+
+/* These paginated audit tables belong to a scrolling document, not a shared
+   fixed-height canvas. DTOutput is a fill item by default; flex shrinking can
+   put the next heading/table inside the first table's rows or pagination.
+   Match module-local output suffixes so dynamic dataset namespaces also work.
+   Keep the full table, toolbar and footer in normal flow, without hiding data,
+   imposing a row-height guess, or altering DT's horizontal scrolling. */
+.datatables[id$="-samples"],
+.datatables[id$="-genotypes"] {
+  flex: 0 0 auto;
+  height: auto !important;
+  min-width: 0;
+  display: flow-root;
+}
+.datatables[id$="-samples"] .dataTables_wrapper,
+.datatables[id$="-genotypes"] .dataTables_wrapper,
+.datatables[id$="-samples"] .dt-container,
+.datatables[id$="-genotypes"] .dt-container {
+  display: flow-root;
+}
+.datatables[id$="-samples"] + h5 {
+  padding-block-start: 1rem;
+  border-block-start: 1px solid var(--bs-border-color, #d5dce2);
+}

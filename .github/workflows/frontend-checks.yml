@@ -24,3 +24,26 @@ jobs:
         run: Rscript tests/test_frontend_contract.R
       - name: Check mocked jobs, review gates and result identity
         run: Rscript tests/test_variant_ui.R
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser test tools
+        run: |
+          python -m pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+      - name: Check audit-table geometry in Chromium
+        timeout-minutes: 5
+        run: |
+          mkdir -p test-artifacts/audit-layout
+          Rscript tests/audit_layout_app.R > test-artifacts/audit-layout/shiny.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          python tests/test_audit_layout_browser.py
+      - name: Preserve synthetic browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-layout-evidence
+          path: test-artifacts/audit-layout/
+          if-no-files-found: ignore
+          retention-days: 7
