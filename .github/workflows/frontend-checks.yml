@@ -41,6 +41,7 @@ jobs:
           Rscript tests/audit_layout_app.R > test-artifacts/audit-layout/shiny.log 2>&1 &
           app_pid=$!
           trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          python tests/inspect_audit_layout.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
           python tests/test_audit_layout_browser.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
       - name: Preserve synthetic browser evidence
         if: always()
