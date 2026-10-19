@@ -46,6 +46,17 @@ run_variant_tests <- function(native = TRUE) {
             agg$junctions$count_mean[agg$junctions$genotype == "0/0"] == 2,
             is.na(agg$junctions$count_sum[agg$junctions$genotype == "1/1"]),
             all(is.na(agg$rna_bases$count[agg$rna_bases$genotype == "NO_CALL:./."])))
+  # Sparse per-sample rows: only the successful sample with support appears; the
+  # successful zero (b) and failed BAMs (c, d) have no rows.
+  sj <- agg$sample_junctions
+  stopifnot(identical(names(sj), c("vcf_sample", "genotype", "key", "score")), nrow(sj) == 1L,
+            sj$vcf_sample == "a", sj$genotype == "0/0", sj$key == junction$key, sj$score == 4,
+            sum(sj$score) == agg$junctions$count_sum[agg$junctions$genotype == "0/0"])
+  tampered <- sj; tampered$score <- 5
+  expect_error(variant_check_sample_junctions(tampered, agg$junctions))
+  expect_error(variant_check_sample_junctions(sj[FALSE, ], agg$junctions))
+  stopifnot(isTRUE(variant_check_sample_junctions(variant_empty_sample_junctions(),
+                                                  agg$junctions[FALSE, ])))
   unsupported <- variant_aggregate(NULL, calls, selected, list(r1, r2, NULL, NULL), cfg, FALSE)
   stopifnot(all(is.na(unsupported$rna_bases$count)), all(unsupported$rna_bases$evidence_status == "UNSUPPORTED_NON_SNV"))
   missing_base <- r2
