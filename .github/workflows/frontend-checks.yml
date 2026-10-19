@@ -1,7 +1,8 @@
 name: Frontend synthetic checks
 on:
   push:
-    branches: ["frontend/ux-safety-20261009"]
+    branches: ["main", "frontend/**"]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read

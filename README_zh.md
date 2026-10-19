@@ -39,7 +39,7 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 输入 `CHROM:POS` 或 `CHROM:POS:REF:ALT`，选择对应记录后运行 **All matched BAMs**。界面报告实际配置、选中、成功和失败样本数（FHS 对应唯一参与者）；不存在的 genotype 不会补造，缺失 genotype 不是 0/0。
 
-批量查询时，在 **Batch variants** 中每行输入一个坐标，然后点击 **Submit independent 16-core jobs**。当前窗口大小和过滤条件分别围绕每个 variant 冻结。查询与提交在后台处理，已提交的任务可在后续条目准备时开始计算。每条输入都有独立的提交结果或失败原因；同一坐标有多个 REF/ALT 时，需要改用明确的 `CHROM:POS:REF:ALT`。在任务列表中打开某个任务，即可查看它自己的结果和日志。
+批量查询时，打开 **Jobs** 标签页（或点击侧栏的 **Batch submissions and saved jobs**），在 **Batch variants** 中每行输入一个坐标，然后点击 **Review batch and resources**。审核对话框会显示资源申请上限（每个不重复的查询行 16 核）；点击 **Confirm and submit full jobs** 之前不会提交任何任务。批量任务始终使用全部匹配的 BAM，当前窗口大小和过滤条件分别围绕每个 variant 冻结。查询与提交在后台处理，已提交的任务可在后续条目准备时开始计算。每条输入都有独立的提交结果或失败原因；同一坐标有多个 REF/ALT 时，需要改用明确的 `CHROM:POS:REF:ALT`。在任务列表中打开某个任务，即可查看它自己的结果和日志。
 
 **RNA allele evidence** 保留 RNA 碱基计数表，并按 genotype 显示逐碱基平均覆盖度、参考序列、GT/AG 改变和实测 junction 支持。不同 genotype 共用刻度；测量为 0 与不可用 NA 分开。GENCODE 页显示参考 transcript/exon/CDS/UTR 和精确 junction 注释。上述结果用于检查剪接证据，不单独证明因果，也不是正式 PSI 或关联检验。
 
