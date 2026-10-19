@@ -195,6 +195,43 @@ variant_get_genotypes <- function(resources, variant) {
   x
 }
 
+# Per-sample junction support, kept sparse: a successful sample without a row for
+# a key has zero support there; failed samples have no rows at all.
+variant_empty_sample_junctions <- function()
+  data.frame(vcf_sample = character(), genotype = character(), key = character(),
+             score = numeric(), stringsAsFactors = FALSE)
+
+variant_sample_junction_rows <- function(sample, genotype, j) {
+  if (is.null(j) || !nrow(j)) return(variant_empty_sample_junctions())
+  j <- j[order(j$key, method = "radix"), , drop = FALSE]
+  data.frame(vcf_sample = sample, genotype = genotype, key = j$key,
+             score = as.numeric(j$score), stringsAsFactors = FALSE)
+}
+
+variant_bind_sample_junctions <- function(parts) {
+  parts <- Filter(function(x) !is.null(x) && nrow(x), parts)
+  out <- if (length(parts)) do.call(rbind, parts) else variant_empty_sample_junctions()
+  rownames(out) <- NULL
+  out
+}
+
+# Per-sample rows must reproduce the published group sums exactly.
+variant_check_sample_junctions <- function(sample_junctions, junctions) {
+  # Groups without successful samples publish NA and must have no per-sample rows.
+  expected <- junctions[!is.na(junctions$count_sum), c("genotype", "key", "count_sum"), drop = FALSE]
+  observed <- if (nrow(sample_junctions))
+    stats::aggregate(score ~ genotype + key, data = sample_junctions, FUN = sum) else
+    data.frame(genotype = character(), key = character(), score = numeric())
+  id <- function(x) paste(x$genotype, x$key, sep = "\r")
+  if (!all(id(observed) %in% id(expected)))
+    stop("Per-sample junction rows exist for a genotype/key without a published group count.")
+  totals <- observed$score[match(id(expected), id(observed))]
+  totals[is.na(totals)] <- 0
+  if (any(totals != expected$count_sum))
+    stop("Per-sample junction scores do not reproduce the published group counts.")
+  invisible(TRUE)
+}
+
 variant_aggregate <- function(variant, genotypes, samples, sample_results, cfg, rna_supported) {
   groups <- sort(unique(genotypes$genotype))
   summary <- list(); depths <- list(); junctions <- list(); bases <- list()
@@ -255,8 +292,12 @@ variant_aggregate <- function(variant, genotypes, samples, sample_results, cfg, 
   }
   empty_j <- data.frame(key = character(), chrom = character(), intron_start1 = integer(), intron_end1 = integer(),
     strand = character(), genotype = character(), count_sum = numeric(), count_mean = numeric(), analyzed_n = integer())
+  junctions <- if (length(junctions)) do.call(rbind, junctions) else empty_j
+  sample_junctions <- variant_bind_sample_junctions(lapply(which(success), function(i)
+    variant_sample_junction_rows(samples$vcf_sample[[i]], samples$genotype[[i]], sample_results[[i]]$junctions)))
+  variant_check_sample_junctions(sample_junctions, junctions)
   list(group_summary = do.call(rbind, summary), depth = do.call(rbind, depths),
-       junctions = if (length(junctions)) do.call(rbind, junctions) else empty_j,
+       junctions = junctions, sample_junctions = sample_junctions,
        rna_bases = do.call(rbind, bases))
 }
 
@@ -405,10 +446,11 @@ variant_stream_init <- function(calls, cfg, rna_supported) {
     samples_with_bases = 0L)), s$groups)
   s$junctions <- data.frame(key = character(), chrom = character(), intron_start1 = integer(),
                            intron_end1 = integer(), strand = character(), stringsAsFactors = FALSE)
+  s$sample_junctions <- list()
   s
 }
 
-variant_stream_add <- function(stream, genotype, contribution) {
+variant_stream_add <- function(stream, genotype, contribution, sample) {
   if (!identical(contribution$status, "SUCCESS")) return(invisible(NULL))
   x <- stream$totals[[genotype]]
   if (is.null(x) || length(contribution$depth) != length(x$depth) ||
@@ -424,6 +466,8 @@ variant_stream_add <- function(stream, genotype, contribution) {
     new_global <- !j$key %in% stream$junctions$key
     if (any(new_global)) stream$junctions <- rbind(stream$junctions,
       j[new_global, c("key", "chrom", "intron_start1", "intron_end1", "strand"), drop = FALSE])
+    stream$sample_junctions[[length(stream$sample_junctions) + 1L]] <-
+      variant_sample_junction_rows(sample, genotype, j)
   }
   if (stream$rna_supported) {
     b <- contribution$audit$rna_bases; e <- attr(b, "excluded")
@@ -476,8 +520,11 @@ variant_stream_finish <- function(stream, calls, samples) {
   empty_j <- data.frame(key = character(), chrom = character(), intron_start1 = integer(), intron_end1 = integer(),
     strand = character(), genotype = character(), count_sum = numeric(), count_mean = numeric(), analyzed_n = integer())
   junctions <- Filter(Negate(is.null), junctions)
+  junctions <- if (length(junctions)) do.call(rbind, junctions) else empty_j
+  sample_junctions <- variant_bind_sample_junctions(stream$sample_junctions)
+  variant_check_sample_junctions(sample_junctions, junctions)
   list(group_summary = do.call(rbind, summary), depth = do.call(rbind, depths),
-       junctions = if (length(junctions)) do.call(rbind, junctions) else empty_j,
+       junctions = junctions, sample_junctions = sample_junctions,
        rna_bases = do.call(rbind, bases))
 }
 
@@ -629,7 +676,7 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
     selected$checkpoint_reused[[i]] <- entry$reused
     progress$resumed <- progress$resumed + as.integer(entry$reused)
     progress$invalidated <- progress$invalidated + as.integer(entry$invalidated)
-    variant_stream_add(stream, selected$genotype[[i]], contribution)
+    variant_stream_add(stream, selected$genotype[[i]], contribution, selected$vcf_sample[[i]])
     selected$status[[i]] <- contribution$status; selected$error[[i]] <- contribution$error
     if (identical(contribution$status, "SUCCESS")) {
       a <- contribution$audit; audits[[i]] <- a
@@ -671,7 +718,7 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
     checkpoint = list(directory = checkpoint_dir, resume_requested = isTRUE(resume),
                       reused = progress$resumed, invalidated = progress$invalidated,
                       policy = "Per-sample atomic contributions replayed exactly once; unchanged failed checkpoints are retained; resume=FALSE recomputes all samples."),
-    sample_result_format = "Compact per-sample audit; detailed reads/events and depth are not retained in the final result.",
+    sample_result_format = "Compact per-sample audit plus sparse per-sample junction scores (sample_junctions); detailed reads/events and depth are not retained in the final result.",
     rna_evidence_status = if (rna_supported) "SNV_BASE_COUNTS" else "UNSUPPORTED_NON_SNV",
     count_unit = "retained primary alignment record; paired ends separate",
     aggregate_definition = "Unweighted mean across all successfully analyzed linked called-genotype BAMs, including observed zeros; failures excluded and counted.",

@@ -99,6 +99,9 @@ run_all_mock_tests <- function() {
   })
   expected <- variant_aggregate(variant, calls, full$samples, reference, cfg, TRUE)
   for (field in c("depth", "junctions", "rna_bases")) all_equal_table(full[[field]], expected[[field]], names(expected[[field]]))
+  # Streamed per-sample junction rows equal the reference aggregation row for row.
+  stopifnot(identical(full$sample_junctions, expected$sample_junctions),
+            all(full$sample_junctions$vcf_sample %in% full$samples$vcf_sample[full$samples$status == "SUCCESS"]))
   # Preview remains explicitly capped and unchanged; full mode ignores the cap.
   preview <- analyze_variant(resources, variant, cfg, sampling_mode = "preview", max_per_group = 3L)
   stopifnot(nrow(preview$samples) == 9L)
