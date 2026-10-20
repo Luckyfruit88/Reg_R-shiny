@@ -35,7 +35,7 @@ Target, tolerance and display-window changes reuse loaded results. Filters and a
 
 Outputs: junction_metrics.csv, junctions.csv, depth.tsv, junction_read_evidence.csv and parameters_and_audit.json. Evidence omits SEQ and QUAL but can contain QNAMEs, sample names and private paths. Keep it within the authorized research environment.
 
-Index timestamps are warning signals only. Successful regional queries do not validate the entire index or BAM. No-junction results do not establish absence of splicing. CRAM, formal PSI, UMI counts and strand-specific denominators are not implemented. GENCODE v48 is an independent reference overlay. Genotype comparison is a descriptive extension, not a differential-splicing test.
+Index timestamps are warning signals only. Successful regional queries do not validate the entire index or BAM. No-junction results do not establish absence of splicing. CRAM, formal PSI, UMI counts and strand-specific denominators are not implemented. GENCODE v48 is an independent reference overlay. Genotype comparison is descriptive; the Model 1 association below is an unadjusted screening test, not a formal differential-splicing analysis.
 
 ## Genotype comparison
 
@@ -55,9 +55,17 @@ DNA depth or genotype-quality values are not inferred from a header declaration.
 
 `available_n` is the number of explicitly mapped RNA BAMs in a DNA genotype group. The mapping enforces one unique BAM per unique VCF sample ID. In the FHS preset these IDs map to unique participants; custom inputs must not be assumed to represent independent people without their own metadata. In all mode, `selected_n == available_n` for every complete called genotype; missing/partial GT groups remain selected=0. During execution, selected = completed + pending and completed = success + failure. At finalization pending must be zero.
 
-`analyzed_n` is the number of successful BAM analyses and remains the denominator of mean depth and mean junction support. Thus a successful zero-coverage sample contributes zero; a failed BAM contributes unavailable evidence and is counted in `failed_n`. Completing every attempt is distinct from successfully measuring every sample. All mode does not turn these descriptive comparisons into association tests or correct library/batch confounding.
+`analyzed_n` is the number of successful BAM analyses and remains the denominator of mean depth and mean junction support. Thus a successful zero-coverage sample contributes zero; a failed BAM contributes unavailable evidence and is counted in `failed_n`. Completing every attempt is distinct from successfully measuring every sample. All mode does not by itself correct library/batch confounding.
 
 The per-sample checkpoint stores native metrics, audit and compact depth/junction contributions. Its checksum and frozen code/input identity are verified before reuse. A fresh aggregate is reconstructed exactly once from completed sample contributions after an interruption, preventing double counting. Complete results additionally require matching VCF/BAM/index state and terminal scheduler success. UI disconnection does not cancel the submitted scheduler job.
+
+## Genotype association (Model 1)
+
+Results include `sample_junctions`: sparse per-sample RegTools scores for every successful sample (a missing row is zero support; failed samples have no rows). Model 1 combines strands for each observed intron boundary pair, as the single-BAM exact count does, and computes per sample `rate = 100 × exact junction reads / denominator reads`.
+
+For each boundary pair it fits `rate ~ dosage` by ordinary least squares over successful samples with a usable additive ALT dosage and a nonzero denominator. Reported values are n, per-dosage counts and mean rates, beta (rate change per ALT allele), its standard error, t, the two-sided p-value on n − 2 degrees of freedom and a Benjamini–Hochberg q-value within the result. Pairs with too few samples, a single dosage, a constant rate or a perfect fit are reported with that status and no p-value.
+
+The model is unadjusted: no age, sex, RNA batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. In preview mode the test describes only the capped subset. Results saved before `sample_junctions` existed must be rerun.
 
 ## GENCODE v48 overlay semantics
 

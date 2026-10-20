@@ -57,6 +57,36 @@ run_variant_tests <- function(native = TRUE) {
   expect_error(variant_check_sample_junctions(sj[FALSE, ], agg$junctions))
   stopifnot(isTRUE(variant_check_sample_junctions(variant_empty_sample_junctions(),
                                                   agg$junctions[FALSE, ])))
+  # Model 1 matches lm() on the independently computed per-sample rates. Strands
+  # of one boundary pair are summed; a zero denominator and a failed BAM are excluded.
+  stopifnot(identical(variant_genotype_dosage(c("0/0", "0/1", "1/1"), 1L), c(0, 1, 2)))
+  stopifnot(all(is.na(variant_genotype_dosage(c("0", "1", "0/1/1", "PARTIAL_CALL:0/.", "NO_CALL:./."), 1L))),
+            all(is.na(variant_genotype_dosage(c("0/0", "0/1", "1/2"), 2L))))
+  assoc_result <- list(variant = data.frame(alt = "C"),
+    samples = data.frame(vcf_sample = letters[1:10], genotype = rep(c("0/0", "0/1", "1/1", "1/1"), c(3, 3, 3, 1)),
+      status = c(rep("SUCCESS", 9), "FAILED"), retained_reads = c(100, 200, 100, 100, 100, 50, 100, 0, 200, NA),
+      stringsAsFactors = FALSE),
+    junctions = data.frame(key = c("c|9|20|+", "c|9|20|-", "c|29|40|+"), chrom = "c",
+      intron_start1 = c(10L, 10L, 30L), intron_end1 = c(20L, 20L, 40L), strand = c("+", "-", "+"),
+      stringsAsFactors = FALSE),
+    sample_junctions = data.frame(vcf_sample = c("a", "b", "c", "c", "d", "e", "f", "g", "i", "a"),
+      genotype = "", key = c(rep("c|9|20|+", 2), "c|9|20|-", "c|9|20|+", "c|9|20|+", "c|9|20|-",
+        "c|9|20|+", "c|9|20|+", "c|9|20|+", "c|29|40|+"),
+      score = c(10, 30, 5, 5, 20, 25, 15, 40, 90, 3), stringsAsFactors = FALSE))
+  assoc <- variant_genotype_association(assoc_result)
+  fit <- summary(lm(rate ~ dosage, data.frame(rate = c(10, 15, 10, 20, 25, 30, 40, 45), dosage = c(0, 0, 0, 1, 1, 1, 2, 2))))$coefficients
+  p1 <- assoc[assoc$intron_start1 == 10L, ]
+  stopifnot(nrow(assoc) == 2L, p1$status == "OK", p1$n == 8L, p1$strands == "+,-",
+            c(p1$n_dosage0, p1$n_dosage1, p1$n_dosage2) == c(3L, 3L, 2L),
+            abs(p1$mean_rate_dosage2 - 42.5) < 1e-12,
+            abs(p1$beta - fit["dosage", "Estimate"]) < 1e-10, abs(p1$se - fit["dosage", "Std. Error"]) < 1e-10,
+            abs(p1$p_value - fit["dosage", "Pr(>|t|)"]) < 1e-12,
+            all(is.finite(assoc$q_value_bh)), assoc$p_value[[1L]] <= assoc$p_value[[2L]])
+  single <- assoc_result; single$samples$genotype <- "0/1"
+  stopifnot(all(variant_genotype_association(single)$status == "SINGLE_DOSAGE"),
+            all(is.na(variant_genotype_association(single)$p_value)))
+  legacy <- assoc_result; legacy$sample_junctions <- NULL
+  expect_error(variant_genotype_association(legacy), "rerun")
   unsupported <- variant_aggregate(NULL, calls, selected, list(r1, r2, NULL, NULL), cfg, FALSE)
   stopifnot(all(is.na(unsupported$rna_bases$count)), all(unsupported$rna_bases$evidence_status == "UNSUPPORTED_NON_SNV"))
   missing_base <- r2

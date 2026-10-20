@@ -98,7 +98,7 @@ variant_ui <- function(id) {
       hr(),
       actionButton(ns("show_jobs"), "Batch submissions and saved jobs"),
       helpText("Use Jobs to review batch resources, reopen a result, or resume an interrupted job."),
-      helpText("DNA GT defines each group. Missing and partial calls remain in the audit and are excluded from RNA comparison. RNA coverage and junctions are descriptive evidence, not a formal splicing association test.")
+      helpText("DNA GT defines each group. Missing and partial calls remain in the audit and are excluded from RNA comparison. RNA coverage and junctions are descriptive evidence; the Genotype association tab adds an unadjusted Model 1 test (nominal p-values, no covariates or relatedness).")
     ),
     uiOutput(ns("view_context"), role = "status", `aria-live` = "polite"),
     uiOutput(ns("lookup_status"), role = "status", `aria-live` = "polite"),
@@ -138,6 +138,13 @@ variant_ui <- function(id) {
         h5("Latest batch outcomes"), uiOutput(ns("batch_status")), DT::DTOutput(ns("batch_outcomes")),
         downloadButton(ns("download_batch"), "Batch outcomes CSV"),
         helpText("Partial failures are retained per input line. Resolve ambiguous alleles before resubmitting only those lines. Inspect an uncertain submission's own receipt before retrying; successful jobs are never rolled back.")),
+      bslib::nav_panel("Genotype association",
+        h5("Model 1 · junction reads per 100 reads ~ additive ALT dosage"),
+        uiOutput(ns("association_status")),
+        DT::DTOutput(ns("association")),
+        downloadButton(ns("download_association"), "Association CSV"),
+        p("Each observed intron boundary pair (strands combined) is tested separately by ordinary least squares across successful samples: rate = 100 × exact junction reads / denominator reads. Dosage counts ALT alleles in the DNA genotype; samples without a usable dosage or with zero denominator reads are excluded."),
+        p("Unadjusted model: no age, sex, batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. q_value_bh is Benjamini–Hochberg within this result only. This is not formal PSI or causal inference.")),
       bslib::nav_panel("Junctions", DT::DTOutput(ns("junctions")),
         p("Intron boundaries are 1-based and inclusive. count_sum is total retained alignment support; count_mean is support per successful RNA sample under the submitted sample scope.")),
       bslib::nav_panel("GENCODE v48", annotation_detail_ui(ns("annotation"))),
@@ -850,6 +857,34 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       output[[field]] <- DT::renderDT(result()[[field]], rownames = FALSE, selection = "none",
         options = list(pageLength = 10, scrollX = TRUE))
     })
+    association <- reactive({
+      r <- result()
+      tryCatch({
+        if (!is.function(backend$variant_genotype_association))
+          stop("Genotype association is unavailable in this backend.")
+        backend$variant_genotype_association(r)
+      }, error = function(e) e)
+    })
+    output$association_status <- renderUI({
+      a <- association()
+      if (inherits(a, "error")) return(div(class = "alert alert-warning", conditionMessage(a)))
+      tested <- sum(a$status == "OK")
+      div(class = "alert alert-info", tested, " of ", nrow(a), " junction boundary pairs tested; ",
+        if (nrow(a)) paste0(a$n[[1L]], " samples with a usable dosage and nonzero denominator. ") else "",
+        if (!identical(result_mode(), "all")) "Exploratory preview subset: p-values describe only the capped samples." else "")
+    })
+    output$association <- DT::renderDT({
+      a <- association()
+      req(!inherits(a, "error"))
+      DT::formatSignif(DT::datatable(a, rownames = FALSE, selection = "none",
+        options = list(pageLength = 10, scrollX = TRUE)),
+        c("mean_rate_dosage0", "mean_rate_dosage1", "mean_rate_dosage2", "beta", "se", "t_value", "p_value", "q_value_bh"), 4)
+    })
+    output$download_association <- downloadHandler("genotype_association_model1.csv", function(file) {
+      a <- association()
+      if (inherits(a, "error")) stop(conditionMessage(a))
+      utils::write.csv(a, file, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+    })
     group_colors <- reactive({
       groups <- as.character(result()$group_summary$genotype)
       stats::setNames(grDevices::hcl.colors(max(1L, length(groups)), palette = "Dark 3"), groups)
@@ -955,7 +990,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       results_stale = results_stale, selected_record = selected_record,
       active_mode = active_mode, active_job = active_job, job_state = job_state,
       single_submit_task = single_submit_task, resume_task = resume_task, batch_task = batch_task, batch_outcomes = batch_outcomes,
-      job_dashboard = job_dashboard,
+      job_dashboard = job_dashboard, association = association,
       open_saved_job = open_saved_job, full_result = full_result))
   })
 }
