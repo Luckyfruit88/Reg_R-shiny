@@ -1,6 +1,7 @@
 # From project root: Rscript tests/test_variants.R [--unit]
 # Synthetic fixtures contain no study data. Native checks require bcftools,
-# samtools and RegTools; --unit explicitly runs only parser/aggregation checks.
+# samtools and RegTools; --unit explicitly runs only parser/aggregation checks,
+# Model 1 gate tests and the Model 1 null-calibration simulations.
 source("backend.R", encoding = "UTF-8")
 source("variant_backend.R", encoding = "UTF-8")
 
@@ -8,6 +9,129 @@ expect_error <- function(expr, text = NULL) {
   e <- tryCatch({ force(expr); NULL }, error = function(e) e)
   stopifnot(inherits(e, "error"))
   if (!is.null(text)) stopifnot(grepl(text, conditionMessage(e), fixed = TRUE))
+}
+
+# Builds a Model 1 input: one row per sample, and per-sample exact reads for
+# each junction key (zeros are left out, as in the sparse result table).
+model1_fixture <- function(genotype, retained, counts) {
+  ids <- sprintf("s%05d", seq_along(genotype))
+  keys <- names(counts)
+  sj <- do.call(rbind, lapply(keys, function(k) {
+    hit <- counts[[k]] > 0
+    data.frame(vcf_sample = ids[hit], genotype = genotype[hit], key = rep(k, sum(hit)),
+               score = counts[[k]][hit], stringsAsFactors = FALSE)
+  }))
+  pos <- seq_along(keys) * 100L
+  list(variant = data.frame(alt = "T"),
+       samples = data.frame(vcf_sample = ids, genotype = genotype, status = "SUCCESS",
+                            retained_reads = retained, stringsAsFactors = FALSE),
+       junctions = data.frame(key = keys, chrom = "c", intron_start1 = pos + 1L, intron_end1 = pos + 50L,
+                              strand = "+", stringsAsFactors = FALSE),
+       sample_junctions = sj)
+}
+
+run_model1_gate_tests <- function() {
+  g <- variant_association_gates()
+  stopifnot(g$min_denominator_reads == 20, g$min_nonzero_samples == 10L, g$min_total_exact_reads == 20,
+            g$min_mac == 5L, g$min_group_samples == 5L, g$min_groups == 2L)
+  geno <- rep(c("0/0", "0/1", "1/1"), c(60L, 30L, 10L))
+  dose <- rep(c(0, 1, 2), c(60L, 30L, 10L))
+  status_of <- function(r, ...) variant_genotype_association(r, ...)$status
+
+  # Singleton carrier with a private junction: one heterozygote, 7 reads.
+  private <- numeric(100); private[61] <- 7
+  a <- variant_genotype_association(model1_fixture(geno, rep(100, 100), list("c|0|1|+" = private)))
+  stopifnot(a$status == "LOW_SUPPORT", is.na(a$p_value), is.na(a$q_value_bh), a$n_nonzero == 1L,
+            a$total_exact_reads == 7)
+
+  # LOW_SUPPORT: 9 supporting samples, or 15 supporting samples with 15 reads in total.
+  nine <- c(rep(5, 9), numeric(91)); fifteen <- c(rep(1, 15), numeric(85))
+  stopifnot(status_of(model1_fixture(geno, rep(100, 100), list("c|0|1|+" = nine))) == "LOW_SUPPORT",
+            status_of(model1_fixture(geno, rep(100, 100), list("c|0|1|+" = fifteen))) == "LOW_SUPPORT")
+
+  # LOW_MAC: mac 2, and mac 6 carried by one 1/1 group of 3 (only one group reaches 5).
+  rare <- rep(c("0/0", "0/1"), c(98L, 2L))
+  hom_only <- rep(c("0/0", "1/1"), c(97L, 3L))
+  busy <- rep(3, 100)
+  stopifnot(status_of(model1_fixture(rare, rep(100, 100), list("c|0|1|+" = busy))) == "LOW_MAC",
+            status_of(model1_fixture(hom_only, rep(100, 100), list("c|0|1|+" = busy))) == "LOW_MAC",
+            variant_genotype_association(model1_fixture(hom_only, rep(100, 100), list("c|0|1|+" = busy)))$mac == 6L)
+
+  # TOO_FEW_SAMPLES precedes every other gate.
+  stopifnot(status_of(model1_fixture(c("0/0", "0/1"), c(100, 100), list("c|0|1|+" = c(5, 9)))) == "TOO_FEW_SAMPLES")
+
+  # CONSTANT_OUTCOME: every sample has 1 read per 100.
+  stopifnot(status_of(model1_fixture(geno, rep(100, 100), list("c|0|1|+" = rep(1, 100)))) == "CONSTANT_OUTCOME")
+
+  # Rates constant within dosage groups and exactly linear (1, 6, 11 per 900):
+  # floating-point residue must not be reported as an OK fit with p ~ 0.
+  linear <- c(1, 6, 11)[dose + 1]
+  pf <- variant_genotype_association(model1_fixture(geno, rep(900, 100), list("c|0|1|+" = linear)))
+  stopifnot(pf$status == "PERFECT_FIT", is.na(pf$se), is.na(pf$p_value), is.na(pf$q_value_bh), is.finite(pf$beta))
+  # Exactly linear per-sample rates with unequal denominators.
+  den <- rep(c(100, 300), 50)
+  exact <- (2 + 3 * dose) * den / 100
+  stopifnot(status_of(model1_fixture(geno, den, list("c|0|1|+" = exact))) == "PERFECT_FIT")
+  # Group-constant but not linear rates (1, 6, 7) keep residual variance and are fitted.
+  stopifnot(status_of(model1_fixture(geno, rep(900, 100), list("c|0|1|+" = c(1, 6, 7)[dose + 1]))) == "OK")
+
+  # Per-sample denominator gate: 10 samples with 10 reads are excluded from every pair.
+  low_den <- rep(100, 100); low_den[1:10] <- 10
+  set.seed(11); noisy <- stats::rpois(100, 5)
+  ld <- variant_genotype_association(model1_fixture(geno, low_den, list("c|0|1|+" = noisy)))
+  acc <- attr(ld, "sample_accounting")
+  stopifnot(ld$n == 90L, ld$n_dosage0 == 50L, acc$below_min_denominator == 10L, acc$analysed == 90L,
+            abs(ld$mean_denominator_dosage0 - 100) < 1e-12)
+
+  # BH runs over OK rows only; gated rows keep NA q-values.
+  set.seed(12)
+  mixed <- list("c|0|1|+" = stats::rpois(100, 4) + 2 * dose, "c|1|2|+" = stats::rpois(100, 4),
+                "c|2|3|+" = c(rep(2, 5), numeric(95)))
+  mx <- variant_genotype_association(model1_fixture(geno, rep(100, 100), mixed))
+  ok <- mx$status == "OK"
+  stopifnot(sum(ok) == 2L, all(mx$status[!ok] == "LOW_SUPPORT"), all(is.na(mx$q_value_bh[!ok])),
+            all(abs(mx$q_value_bh[ok] - stats::p.adjust(mx$p_value[ok], "BH")) < 1e-15))
+
+  # A strong effect whose p-value underflows double precision keeps its magnitude.
+  set.seed(13)
+  strong <- stats::rpois(2000, 50) + 400 * rep(c(0, 1, 2), c(1000, 800, 200))
+  st <- variant_genotype_association(model1_fixture(rep(c("0/0", "0/1", "1/1"), c(1000L, 800L, 200L)),
+                                                    rep(1000, 2000), list("c|0|1|+" = strong)))
+  stopifnot(st$status == "OK", st$log10_p_value < -300, st$p_value < 1e-300,
+            variant_format_p(st$p_value) == "< 1e-300")
+  stopifnot(identical(variant_format_p(c(0, 1e-310, 0.5, NA, 2e-5)),
+                      c("< 1e-300", "< 1e-300", "0.5", NA, "2e-05")))
+  cat("Model 1 gates, perfect-fit tolerance and p-value display: PASS\n")
+}
+
+# Acceptance simulations for the gates (deterministic seeds).
+run_model1_calibration <- function() {
+  set.seed(20261020)
+  n <- 4700L; maf <- 0.05
+  geno <- sample(c("0/0", "0/1", "1/1"), n, TRUE, c((1 - maf)^2, 2 * maf * (1 - maf), maf^2))
+  retained <- stats::rpois(n, 1000) + 1
+  # Null 1: 1000 junctions, each seen in one random sample with one read.
+  carriers <- sample(n, 1000L, TRUE)
+  singles <- stats::setNames(lapply(carriers, function(i) { v <- numeric(n); v[i] <- 1; v }),
+                             sprintf("c|%d|%d|+", seq_len(1000L), seq_len(1000L) + 1L))
+  s1 <- variant_genotype_association(model1_fixture(geno, retained, singles))
+  false_q <- sum(s1$q_value_bh < 0.05, na.rm = TRUE)
+  # Null 2: 300 well-supported junctions whose expected rate (2 per 100
+  # denominator reads) does not depend on genotype. Counts scale with each
+  # sample's denominator; otherwise the shared denominator vector would itself
+  # carry a chance genotype association into every pair.
+  m <- 1000L; maf2 <- 0.3
+  geno2 <- sample(c("0/0", "0/1", "1/1"), m, TRUE, c((1 - maf2)^2, 2 * maf2 * (1 - maf2), maf2^2))
+  den2 <- stats::rpois(m, 1000) + 1
+  supported <- stats::setNames(lapply(seq_len(300L), function(i) stats::rpois(m, 0.02 * den2)),
+                               sprintf("c|%d|%d|+", seq_len(300L), seq_len(300L) + 1L))
+  s2 <- variant_genotype_association(model1_fixture(geno2, den2, supported))
+  ks <- suppressWarnings(stats::ks.test(s2$p_value[s2$status == "OK"], "punif"))$p.value
+  cat(sprintf("Singleton null: %d of %d pairs with q < 0.05 (statuses: %s)\n", false_q, nrow(s1),
+              paste(names(table(s1$status)), table(s1$status), collapse = ", ")))
+  cat(sprintf("Well-supported null: %d OK pairs, KS p = %.3f\n", sum(s2$status == "OK"), ks))
+  stopifnot(false_q == 0L, sum(s2$status == "OK") == 300L, ks > 0.05)
+  cat("Model 1 null calibration: PASS\n")
 }
 
 run_variant_tests <- function(native = TRUE) {
@@ -73,20 +197,31 @@ run_variant_tests <- function(native = TRUE) {
       genotype = "", key = c(rep("c|9|20|+", 2), "c|9|20|-", "c|9|20|+", "c|9|20|+", "c|9|20|-",
         "c|9|20|+", "c|9|20|+", "c|9|20|+", "c|29|40|+"),
       score = c(10, 30, 5, 5, 20, 25, 15, 40, 90, 3), stringsAsFactors = FALSE))
-  assoc <- variant_genotype_association(assoc_result)
+  # Gates relaxed to their minimum so the small fixture checks the arithmetic.
+  open_gates <- variant_association_gates(min_denominator_reads = 1, min_nonzero_samples = 1L,
+    min_total_exact_reads = 1, min_mac = 1L, min_group_samples = 1L)
+  assoc <- variant_genotype_association(assoc_result, gates = open_gates)
   fit <- summary(lm(rate ~ dosage, data.frame(rate = c(10, 15, 10, 20, 25, 30, 40, 45), dosage = c(0, 0, 0, 1, 1, 1, 2, 2))))$coefficients
   p1 <- assoc[assoc$intron_start1 == 10L, ]
   stopifnot(nrow(assoc) == 2L, p1$status == "OK", p1$n == 8L, p1$strands == "+,-",
             c(p1$n_dosage0, p1$n_dosage1, p1$n_dosage2) == c(3L, 3L, 2L),
+            p1$mac == 7L, p1$n_nonzero == 8L, p1$total_exact_reads == 240,
+            abs(p1$mean_denominator_dosage2 - 150) < 1e-12,
             abs(p1$mean_rate_dosage2 - 42.5) < 1e-12,
             abs(p1$beta - fit["dosage", "Estimate"]) < 1e-10, abs(p1$se - fit["dosage", "Std. Error"]) < 1e-10,
             abs(p1$p_value - fit["dosage", "Pr(>|t|)"]) < 1e-12,
+            abs(p1$log10_p_value - log10(fit["dosage", "Pr(>|t|)"])) < 1e-10,
             all(is.finite(assoc$q_value_bh)), assoc$p_value[[1L]] <= assoc$p_value[[2L]])
+  # The same fixture under the default gates: no dosage group reaches 5 samples.
+  stopifnot(all(variant_genotype_association(assoc_result)$status == "LOW_MAC"),
+            all(is.na(variant_genotype_association(assoc_result)$p_value)))
   single <- assoc_result; single$samples$genotype <- "0/1"
   stopifnot(all(variant_genotype_association(single)$status == "SINGLE_DOSAGE"),
             all(is.na(variant_genotype_association(single)$p_value)))
   legacy <- assoc_result; legacy$sample_junctions <- NULL
   expect_error(variant_genotype_association(legacy), "rerun")
+  run_model1_gate_tests()
+  run_model1_calibration()
   unsupported <- variant_aggregate(NULL, calls, selected, list(r1, r2, NULL, NULL), cfg, FALSE)
   stopifnot(all(is.na(unsupported$rna_bases$count)), all(unsupported$rna_bases$evidence_status == "UNSUPPORTED_NON_SNV"))
   missing_base <- r2

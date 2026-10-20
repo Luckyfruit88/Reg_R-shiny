@@ -41,7 +41,9 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 批量查询时，打开 **Jobs** 标签页（或点击侧栏的 **Batch submissions and saved jobs**），在 **Batch variants** 中每行输入一个坐标，然后点击 **Review batch and resources**。审核对话框会显示资源申请上限（每个不重复的查询行 16 核）；点击 **Confirm and submit full jobs** 之前不会提交任何任务。批量任务始终使用全部匹配的 BAM，当前窗口大小和过滤条件分别围绕每个 variant 冻结。查询与提交在后台处理，已提交的任务可在后续条目准备时开始计算。每条输入都有独立的提交结果或失败原因；同一坐标有多个 REF/ALT 时，需要改用明确的 `CHROM:POS:REF:ALT`。在任务列表中打开某个任务，即可查看它自己的结果和日志。
 
-**RNA allele evidence** 保留 RNA 碱基计数表，并按 genotype 显示逐碱基平均覆盖度、参考序列、GT/AG 改变和实测 junction 支持。不同 genotype 共用刻度；测量为 0 与不可用 NA 分开。GENCODE 页显示参考 transcript/exon/CDS/UTR 和精确 junction 注释。上述结果用于检查剪接证据，不单独证明因果，也不是正式 PSI 或关联检验。
+**RNA allele evidence** 保留 RNA 碱基计数表，并按 genotype 显示逐碱基平均覆盖度、参考序列、GT/AG 改变和实测 junction 支持。不同 genotype 共用刻度；测量为 0 与不可用 NA 分开。GENCODE 页显示参考 transcript/exon/CDS/UTR 和精确 junction 注释。上述结果用于检查剪接证据，不单独证明因果，也不是正式 PSI。
+
+**Genotype association** 标签页对每个观测到的 intron 边界对运行 Model 1：以加性 ALT 剂量（仅双等位二倍体 genotype）对 `100 × exact junction reads / denominator reads` 做 OLS，不校正协变量或亲缘关系，p 值为名义值。样本的分母须 ≥ 20 reads。边界对须满足 `mac` ≥ 5 且至少 2 个剂量组各 ≥ 5 人（否则为 `LOW_MAC`），并且有 exact reads 的样本 ≥ 10、exact reads 总数 ≥ 20（否则为 `LOW_SUPPORT`）；其余状态为 `TOO_FEW_SAMPLES`、`SINGLE_DOSAGE`、`CONSTANT_OUTCOME` 和 `PERFECT_FIT`（残差平方和 ≤ 1e-10 × 总平方和）。只有 `OK` 行给出 p 值，BH q 值只在同一结果的 `OK` 行之间计算；`OK` 不代表显著，界面不设显著性阈值。低于 1e-300 的 p 值显示为 `< 1e-300`，并另列 `log10_p_value`。定义见 [Metric definitions](docs/METRICS.md#genotype-association-model-1)。
 
 全量比较作为独立 SCC 作业运行，关闭浏览器不会停止。回到相同的 prepared dataset，可在保存的作业列表中打开或恢复。原始 BAM/VCF 只读，不自动重建源索引。
 

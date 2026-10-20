@@ -23,6 +23,8 @@ jobs:
         timeout-minutes: 5
         run: |
           Rscript -e 'install.packages(c("shiny", "bslib", "DT", "future", "promises", "later", "jsonlite", "data.table", "processx"))'
+      - name: Check variant parsing, aggregation and Model 1 gates/calibration
+        run: Rscript tests/test_variants.R --unit
       - name: Check UI structure and display binding
         run: Rscript tests/test_frontend_contract.R
       - name: Check mocked jobs, review gates and result identity

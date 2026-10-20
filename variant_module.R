@@ -143,8 +143,9 @@ variant_ui <- function(id) {
         uiOutput(ns("association_status")),
         DT::DTOutput(ns("association")),
         downloadButton(ns("download_association"), "Association CSV"),
-        p("Each observed intron boundary pair (strands combined) is tested separately by ordinary least squares across successful samples: rate = 100 × exact junction reads / denominator reads. Dosage counts ALT alleles in the DNA genotype; samples without a usable dosage or with zero denominator reads are excluded."),
-        p("Unadjusted model: no age, sex, batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. q_value_bh is Benjamini–Hochberg within this result only. This is not formal PSI or causal inference.")),
+        p("Each observed intron boundary pair (strands combined) is tested separately by ordinary least squares across successful samples: rate = 100 × exact junction reads / denominator reads, where denominator reads are the sample's retained alignments overlapping the analysis interval. Dosage counts ALT alleles in a biallelic diploid DNA genotype; samples without a usable dosage or below the minimum denominator are excluded from every pair."),
+        uiOutput(ns("association_legend")),
+        p("Unadjusted model: no age, sex, batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. q_value_bh is Benjamini–Hochberg over the OK rows of this result only, not across batch variants. OK means the pair passed every gate and was fitted; it does not mean significant, and no significance cutoff is applied. This is not formal PSI or causal inference.")),
       bslib::nav_panel("Junctions", DT::DTOutput(ns("junctions")),
         p("Intron boundaries are 1-based and inclusive. count_sum is total retained alignment support; count_mean is support per successful RNA sample under the submitted sample scope.")),
       bslib::nav_panel("GENCODE v48", annotation_detail_ui(ns("annotation"))),
@@ -869,20 +870,52 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       a <- association()
       if (inherits(a, "error")) return(div(class = "alert alert-warning", conditionMessage(a)))
       tested <- sum(a$status == "OK")
-      div(class = "alert alert-info", tested, " of ", nrow(a), " junction boundary pairs tested; ",
-        if (nrow(a)) paste0(a$n[[1L]], " samples with a usable dosage and nonzero denominator. ") else "",
+      acc <- attr(a, "sample_accounting"); g <- attr(a, "gates")
+      gated <- table(factor(a$status, c("LOW_MAC", "LOW_SUPPORT")))
+      div(class = "alert alert-info", tested, " of ", nrow(a), " junction boundary pairs tested (status OK); ",
+        gated[["LOW_MAC"]], " LOW_MAC and ", gated[["LOW_SUPPORT"]], " LOW_SUPPORT without p-values. ",
+        if (!is.null(acc)) paste0(acc$analysed, " of ", acc$successful, " successful samples analysed; ",
+          acc$without_usable_dosage, " without a usable biallelic diploid dosage and ", acc$below_min_denominator,
+          " below ", g$min_denominator_reads, " denominator reads were excluded. ") else "",
         if (!identical(result_mode(), "all")) "Exploratory preview subset: p-values describe only the capped samples." else "")
+    })
+    output$association_legend <- renderUI({
+      a <- association()
+      req(!inherits(a, "error"), !is.null(g <- attr(a, "gates")))
+      item <- function(code, rule) tags$li(tags$code(code), " — ", rule)
+      div(class = "small",
+        p(tags$strong("Status rules, applied in this order (each failing row has no p-value and is outside the BH family):")),
+        tags$ul(
+          item("TOO_FEW_SAMPLES", paste0("fewer than ", g$min_samples, " analysed samples.")),
+          item("SINGLE_DOSAGE", "all analysed samples have the same ALT dosage."),
+          item("LOW_MAC", paste0("minor allele count (mac) < ", g$min_mac, ", or fewer than ", g$min_groups,
+            " dosage groups with at least ", g$min_group_samples, " samples each.")),
+          item("LOW_SUPPORT", paste0("fewer than ", g$min_nonzero_samples, " samples with exact junction reads (n_nonzero), or fewer than ",
+            g$min_total_exact_reads, " exact reads in total (total_exact_reads).")),
+          item("CONSTANT_OUTCOME", "every analysed sample has the same rate."),
+          item("PERFECT_FIT", paste0("residual sum of squares ≤ ", format(g$perfect_fit_rel_tol),
+            " × total sum of squares: the rates lie on a line, so no standard error exists.")),
+          item("OK", "passed every gate and was fitted; not a significance call.")),
+        p(paste0("Samples need at least ", g$min_denominator_reads, " denominator reads to enter any pair. ",
+          "mean_denominator_dosage0/1/2 are the mean denominator reads of the analysed samples per dosage; mean_rate_dosage0/1/2 are unweighted means of per-sample rates. ",
+          "p-values below ", format(g$p_display_floor), " are shown as \"< ", format(g$p_display_floor),
+          "\"; log10_p_value keeps their magnitude.")))
     })
     output$association <- DT::renderDT({
       a <- association()
       req(!inherits(a, "error"))
+      floor <- attr(a, "gates")$p_display_floor
+      a$p_value <- backend$variant_format_p(a$p_value, floor); a$q_value_bh <- backend$variant_format_p(a$q_value_bh, floor)
       DT::formatSignif(DT::datatable(a, rownames = FALSE, selection = "none",
         options = list(pageLength = 10, scrollX = TRUE)),
-        c("mean_rate_dosage0", "mean_rate_dosage1", "mean_rate_dosage2", "beta", "se", "t_value", "p_value", "q_value_bh"), 4)
+        c("mean_denominator_dosage0", "mean_denominator_dosage1", "mean_denominator_dosage2",
+          "mean_rate_dosage0", "mean_rate_dosage1", "mean_rate_dosage2", "beta", "se", "t_value", "log10_p_value"), 4)
     })
     output$download_association <- downloadHandler("genotype_association_model1.csv", function(file) {
       a <- association()
       if (inherits(a, "error")) stop(conditionMessage(a))
+      floor <- attr(a, "gates")$p_display_floor
+      a$p_value <- backend$variant_format_p(a$p_value, floor); a$q_value_bh <- backend$variant_format_p(a$q_value_bh, floor)
       utils::write.csv(a, file, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
     })
     group_colors <- reactive({

@@ -63,7 +63,23 @@ The per-sample checkpoint stores native metrics, audit and compact depth/junctio
 
 Results include `sample_junctions`: sparse per-sample RegTools scores for every successful sample (a missing row is zero support; failed samples have no rows). Model 1 combines strands for each observed intron boundary pair, as the single-BAM exact count does, and computes per sample `rate = 100 × exact junction reads / denominator reads`.
 
-For each boundary pair it fits `rate ~ dosage` by ordinary least squares over successful samples with a usable additive ALT dosage and a nonzero denominator. Reported values are n, per-dosage counts and mean rates, beta (rate change per ALT allele), its standard error, t, the two-sided p-value on n − 2 degrees of freedom and a Benjamini–Hochberg q-value within the result. Pairs with too few samples, a single dosage, a constant rate or a perfect fit are reported with that status and no p-value.
+Denominator reads are the sample's retained alignments with an M, = or X block in the analysis interval (the same denominator as single-BAM analysis), so the rate depends on the chosen interval. Only successful samples with a biallelic diploid ALT dosage (0/0, 0/1, 1/1) and at least **20 denominator reads** enter the model; the tab reports how many successful samples each rule excluded. For each boundary pair it fits `rate ~ dosage` by ordinary least squares over those samples.
+
+Before fitting, every pair passes gates that use only genotype counts and junction support, never the association itself. They are checked in this order; the first that fails sets the status:
+
+| Status | Rule |
+|---|---|
+| `TOO_FEW_SAMPLES` | fewer than 3 analysed samples |
+| `SINGLE_DOSAGE` | all analysed samples share one dosage |
+| `LOW_MAC` | minor allele count `mac = min(ΣALT, 2n − ΣALT)` < 5, or fewer than 2 dosage groups with ≥ 5 samples each |
+| `LOW_SUPPORT` | fewer than 10 samples with exact junction reads (`n_nonzero`), or fewer than 20 exact reads in total (`total_exact_reads`) |
+| `CONSTANT_OUTCOME` | every analysed sample has the same rate |
+| `PERFECT_FIT` | residual sum of squares ≤ 1e-10 × total sum of squares: the rates lie on a line and no standard error exists |
+| `OK` | passed every gate and was fitted; this is not a significance call |
+
+Rows with any status other than `OK` keep their descriptive columns, have no se, t, p or q, and are outside the Benjamini–Hochberg family: `q_value_bh` adjusts only the `OK` rows of one result, not across batch variants. No significance cutoff is applied.
+
+Columns: `n` and `n_dosage0/1/2` count analysed samples; `mac`, `n_nonzero` and `total_exact_reads` are the gate quantities; `mean_denominator_dosage0/1/2` are mean denominator reads per dosage; `mean_rate_dosage0/1/2` are unweighted means of per-sample rates; `beta` is the rate change per ALT allele (exact reads per 100 denominator reads), with its standard error, t and the two-sided p-value on n − 2 degrees of freedom. The p-value is computed on the log scale and also reported as `log10_p_value`; p- and q-values below 1e-300 are shown and exported as `< 1e-300`, never as 0.
 
 The model is unadjusted: no age, sex, RNA batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. In preview mode the test describes only the capped subset. Results saved before `sample_junctions` existed must be rerun.
 

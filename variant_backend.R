@@ -244,16 +244,43 @@ variant_genotype_dosage <- function(genotype, n_alt) {
 
 variant_empty_association <- function() data.frame(chrom = character(), intron_start1 = integer(),
   intron_end1 = integer(), strands = character(), n = integer(), n_dosage0 = integer(),
-  n_dosage1 = integer(), n_dosage2 = integer(), mean_rate_dosage0 = numeric(),
-  mean_rate_dosage1 = numeric(), mean_rate_dosage2 = numeric(), beta = numeric(), se = numeric(),
-  t_value = numeric(), p_value = numeric(), q_value_bh = numeric(), status = character(),
+  n_dosage1 = integer(), n_dosage2 = integer(), mac = integer(), n_nonzero = integer(),
+  total_exact_reads = numeric(), mean_denominator_dosage0 = numeric(),
+  mean_denominator_dosage1 = numeric(), mean_denominator_dosage2 = numeric(),
+  mean_rate_dosage0 = numeric(), mean_rate_dosage1 = numeric(), mean_rate_dosage2 = numeric(),
+  beta = numeric(), se = numeric(), t_value = numeric(), p_value = numeric(),
+  log10_p_value = numeric(), q_value_bh = numeric(), status = character(),
   stringsAsFactors = FALSE)
+
+# Model 1 pre-test gates. They use only genotype counts and junction support,
+# never the fitted association, so applying them does not select on the result.
+# Rows that fail a gate keep their descriptive columns but get no p-value and
+# are left out of the Benjamini-Hochberg family.
+variant_association_gates <- function(min_samples = 3L, min_denominator_reads = 20,
+                                      min_nonzero_samples = 10L, min_total_exact_reads = 20,
+                                      min_mac = 5L, min_group_samples = 5L, min_groups = 2L,
+                                      perfect_fit_rel_tol = 1e-10, p_display_floor = 1e-300)
+  list(min_samples = as.integer(min_samples), min_denominator_reads = min_denominator_reads,
+       min_nonzero_samples = as.integer(min_nonzero_samples),
+       min_total_exact_reads = min_total_exact_reads, min_mac = as.integer(min_mac),
+       min_group_samples = as.integer(min_group_samples), min_groups = as.integer(min_groups),
+       perfect_fit_rel_tol = perfect_fit_rel_tol, p_display_floor = p_display_floor)
+
+# Display form of p- and q-values: values below the floor (including values
+# that underflow to 0) are shown as "< 1e-300", never as 0.
+variant_format_p <- function(p, floor = variant_association_gates()$p_display_floor) {
+  out <- rep(NA_character_, length(p))
+  ok <- is.finite(p)
+  out[ok] <- ifelse(p[ok] < floor, paste("<", format(floor)), as.character(signif(p[ok], 4)))
+  out
+}
 
 # Model 1: per-sample exact junction reads per 100 denominator reads ~ dosage,
 # fitted by ordinary least squares for each observed boundary pair (strands
 # combined, as in the single-BAM exact count). Unadjusted: no age, sex, batch,
-# PCs or relatedness; p-values are nominal and q-values are BH within the result.
-variant_genotype_association <- function(result, min_samples = 3L) {
+# PCs or relatedness; p-values are nominal and q-values are BH over OK rows.
+variant_genotype_association <- function(result, min_samples = 3L,
+                                         gates = variant_association_gates(min_samples = min_samples)) {
   sj <- result$sample_junctions
   if (is.null(sj))
     stop("This saved result predates per-sample junction scores; rerun the variant to compute genotype association.")
@@ -262,11 +289,22 @@ variant_genotype_association <- function(result, min_samples = 3L) {
     stop("Per-sample accounting is missing from this result.")
   n_alt <- length(strsplit(as.character(result$variant$alt[[1L]]), ",", fixed = TRUE)[[1L]])
   s <- s[s$status == "SUCCESS", c("vcf_sample", "genotype", "retained_reads"), drop = FALSE]
+  successful <- nrow(s)
   s$dosage <- variant_genotype_dosage(s$genotype, n_alt)
   if (length(s$dosage) != nrow(s)) stop("Genotype dosage must return one value per sample.")
-  s <- s[is.finite(s$dosage) & is.finite(s$retained_reads) & s$retained_reads > 0, , drop = FALSE]
+  s <- s[is.finite(s$dosage), , drop = FALSE]
+  usable_dosage <- nrow(s)
+  # Per-sample denominator gate: a rate from a handful of reads is noise.
+  s <- s[is.finite(s$retained_reads) & s$retained_reads >= gates$min_denominator_reads, , drop = FALSE]
+  accounting <- list(successful = successful, without_usable_dosage = successful - usable_dosage,
+                     below_min_denominator = usable_dosage - nrow(s), analysed = nrow(s))
+  finish <- function(out) {
+    attr(out, "gates") <- gates
+    attr(out, "sample_accounting") <- accounting
+    out
+  }
   j <- result$junctions
-  if (!nrow(j)) return(variant_empty_association())
+  if (!nrow(j)) return(finish(variant_empty_association()))
   keys <- unique(j[, c("key", "chrom", "intron_start1", "intron_end1", "strand"), drop = FALSE])
   pairs <- unique(keys[, c("chrom", "intron_start1", "intron_end1"), drop = FALSE])
   pairs <- pairs[order(pairs$chrom, pairs$intron_start1, pairs$intron_end1), , drop = FALSE]
@@ -275,40 +313,57 @@ variant_genotype_association <- function(result, min_samples = 3L) {
   sj$pair <- keys$pair[match(sj$key, keys$key)]
   if (anyNA(sj$pair)) stop("Per-sample junction rows reference an unpublished junction.")
   x <- s$dosage; n <- length(x)
+  # Genotype-level gates are identical for every pair of this result.
+  mac <- as.integer(min(sum(x), 2 * n - sum(x)))
+  large_groups <- sum(vapply(c(0, 1, 2), function(d) sum(x == d) >= gates$min_group_samples, logical(1)))
   by_pair <- split(sj, sj$pair)
+  group_mean <- function(v, d) if (any(x == d)) mean(v[x == d]) else NA_real_
   rows <- lapply(seq_len(nrow(pairs)), function(i) {
     id <- pair_id(pairs[i, , drop = FALSE])
     hits <- by_pair[[id]]
     count <- if (is.null(hits)) rep(NA_real_, n) else tapply(hits$score, hits$vcf_sample, sum)[s$vcf_sample]
-    count[is.na(count)] <- 0
-    y <- 100 * as.numeric(count) / s$retained_reads
-    beta <- se <- t_value <- p_value <- NA_real_
-    status <- if (n < min_samples) "TOO_FEW_SAMPLES" else if (length(unique(x)) < 2L) "SINGLE_DOSAGE" else
+    count <- as.numeric(count); count[is.na(count)] <- 0
+    y <- 100 * count / s$retained_reads
+    n_nonzero <- sum(count > 0); total_exact <- sum(count)
+    beta <- se <- t_value <- p_value <- log10_p <- NA_real_
+    status <- if (n < gates$min_samples) "TOO_FEW_SAMPLES" else
+      if (length(unique(x)) < 2L) "SINGLE_DOSAGE" else
+      if (mac < gates$min_mac || large_groups < gates$min_groups) "LOW_MAC" else
+      if (n_nonzero < gates$min_nonzero_samples || total_exact < gates$min_total_exact_reads) "LOW_SUPPORT" else
       if (length(unique(y)) < 2L) "CONSTANT_OUTCOME" else "OK"
     if (status == "OK") {
       sxx <- sum((x - mean(x))^2)
+      tss <- sum((y - mean(y))^2)
       beta <- sum((x - mean(x)) * (y - mean(y))) / sxx
       rss <- sum((y - mean(y) - beta * (x - mean(x)))^2)
-      if (n <= 2L || rss <= 0) status <- "PERFECT_FIT" else {
+      # Relative tolerance: floating-point residue of an exact fit is not variance.
+      if (n <= 2L || rss <= gates$perfect_fit_rel_tol * tss) {
+        status <- "PERFECT_FIT"
+      } else {
         se <- sqrt(rss / (n - 2L) / sxx); t_value <- beta / se
-        p_value <- 2 * stats::pt(-abs(t_value), df = n - 2L)
+        # Log scale keeps the magnitude when the p-value underflows double precision.
+        log_p <- min(0, log(2) + stats::pt(-abs(t_value), df = n - 2L, log.p = TRUE))
+        p_value <- exp(log_p); log10_p <- log_p / log(10)
       }
     }
-    group_mean <- function(d) if (any(x == d)) mean(y[x == d]) else NA_real_
     data.frame(chrom = pairs$chrom[[i]], intron_start1 = pairs$intron_start1[[i]],
       intron_end1 = pairs$intron_end1[[i]],
       strands = paste(sort(unique(keys$strand[keys$pair == id]), method = "radix"), collapse = ","), n = n,
       n_dosage0 = sum(x == 0), n_dosage1 = sum(x == 1), n_dosage2 = sum(x == 2),
-      mean_rate_dosage0 = group_mean(0), mean_rate_dosage1 = group_mean(1), mean_rate_dosage2 = group_mean(2),
-      beta = beta, se = se, t_value = t_value, p_value = p_value, q_value_bh = NA_real_,
+      mac = mac, n_nonzero = n_nonzero, total_exact_reads = total_exact,
+      mean_denominator_dosage0 = group_mean(s$retained_reads, 0),
+      mean_denominator_dosage1 = group_mean(s$retained_reads, 1),
+      mean_denominator_dosage2 = group_mean(s$retained_reads, 2),
+      mean_rate_dosage0 = group_mean(y, 0), mean_rate_dosage1 = group_mean(y, 1), mean_rate_dosage2 = group_mean(y, 2),
+      beta = beta, se = se, t_value = t_value, p_value = p_value, log10_p_value = log10_p, q_value_bh = NA_real_,
       status = status, stringsAsFactors = FALSE)
   })
   out <- do.call(rbind, rows)
-  tested <- is.finite(out$p_value)
+  tested <- out$status == "OK"
   out$q_value_bh[tested] <- stats::p.adjust(out$p_value[tested], method = "BH")
-  out <- out[order(is.na(out$p_value), out$p_value, out$intron_start1, out$intron_end1), , drop = FALSE]
+  out <- out[order(!tested, out$log10_p_value, out$intron_start1, out$intron_end1), , drop = FALSE]
   rownames(out) <- NULL
-  out
+  finish(out)
 }
 
 variant_aggregate <- function(variant, genotypes, samples, sample_results, cfg, rna_supported) {
