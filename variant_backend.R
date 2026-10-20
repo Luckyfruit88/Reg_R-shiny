@@ -232,6 +232,85 @@ variant_check_sample_junctions <- function(sample_junctions, junctions) {
   invisible(TRUE)
 }
 
+# Additive ALT-allele dosage used by Model 1. Returns one numeric value per
+# canonical genotype label; NA excludes that sample from the association test.
+# Only biallelic diploid calls are scored: multiallelic records have no single
+# ALT effect, and haploid calls would mix sex into an unadjusted dosage.
+variant_genotype_dosage <- function(genotype, n_alt) {
+  if (!identical(as.integer(n_alt), 1L)) return(rep(NA_real_, length(genotype)))
+  unname(vapply(strsplit(as.character(genotype), "/", fixed = TRUE), function(a)
+    if (length(a) == 2L && all(a %in% c("0", "1"))) sum(a == "1") else NA_real_, numeric(1)))
+}
+
+variant_empty_association <- function() data.frame(chrom = character(), intron_start1 = integer(),
+  intron_end1 = integer(), strands = character(), n = integer(), n_dosage0 = integer(),
+  n_dosage1 = integer(), n_dosage2 = integer(), mean_rate_dosage0 = numeric(),
+  mean_rate_dosage1 = numeric(), mean_rate_dosage2 = numeric(), beta = numeric(), se = numeric(),
+  t_value = numeric(), p_value = numeric(), q_value_bh = numeric(), status = character(),
+  stringsAsFactors = FALSE)
+
+# Model 1: per-sample exact junction reads per 100 denominator reads ~ dosage,
+# fitted by ordinary least squares for each observed boundary pair (strands
+# combined, as in the single-BAM exact count). Unadjusted: no age, sex, batch,
+# PCs or relatedness; p-values are nominal and q-values are BH within the result.
+variant_genotype_association <- function(result, min_samples = 3L) {
+  sj <- result$sample_junctions
+  if (is.null(sj))
+    stop("This saved result predates per-sample junction scores; rerun the variant to compute genotype association.")
+  s <- result$samples
+  if (!is.data.frame(s) || !all(c("vcf_sample", "genotype", "status", "retained_reads") %in% names(s)))
+    stop("Per-sample accounting is missing from this result.")
+  n_alt <- length(strsplit(as.character(result$variant$alt[[1L]]), ",", fixed = TRUE)[[1L]])
+  s <- s[s$status == "SUCCESS", c("vcf_sample", "genotype", "retained_reads"), drop = FALSE]
+  s$dosage <- variant_genotype_dosage(s$genotype, n_alt)
+  if (length(s$dosage) != nrow(s)) stop("Genotype dosage must return one value per sample.")
+  s <- s[is.finite(s$dosage) & is.finite(s$retained_reads) & s$retained_reads > 0, , drop = FALSE]
+  j <- result$junctions
+  if (!nrow(j)) return(variant_empty_association())
+  keys <- unique(j[, c("key", "chrom", "intron_start1", "intron_end1", "strand"), drop = FALSE])
+  pairs <- unique(keys[, c("chrom", "intron_start1", "intron_end1"), drop = FALSE])
+  pairs <- pairs[order(pairs$chrom, pairs$intron_start1, pairs$intron_end1), , drop = FALSE]
+  pair_id <- function(x) paste(x$chrom, x$intron_start1, x$intron_end1, sep = "\r")
+  keys$pair <- pair_id(keys)
+  sj$pair <- keys$pair[match(sj$key, keys$key)]
+  if (anyNA(sj$pair)) stop("Per-sample junction rows reference an unpublished junction.")
+  x <- s$dosage; n <- length(x)
+  by_pair <- split(sj, sj$pair)
+  rows <- lapply(seq_len(nrow(pairs)), function(i) {
+    id <- pair_id(pairs[i, , drop = FALSE])
+    hits <- by_pair[[id]]
+    count <- if (is.null(hits)) rep(NA_real_, n) else tapply(hits$score, hits$vcf_sample, sum)[s$vcf_sample]
+    count[is.na(count)] <- 0
+    y <- 100 * as.numeric(count) / s$retained_reads
+    beta <- se <- t_value <- p_value <- NA_real_
+    status <- if (n < min_samples) "TOO_FEW_SAMPLES" else if (length(unique(x)) < 2L) "SINGLE_DOSAGE" else
+      if (length(unique(y)) < 2L) "CONSTANT_OUTCOME" else "OK"
+    if (status == "OK") {
+      sxx <- sum((x - mean(x))^2)
+      beta <- sum((x - mean(x)) * (y - mean(y))) / sxx
+      rss <- sum((y - mean(y) - beta * (x - mean(x)))^2)
+      if (n <= 2L || rss <= 0) status <- "PERFECT_FIT" else {
+        se <- sqrt(rss / (n - 2L) / sxx); t_value <- beta / se
+        p_value <- 2 * stats::pt(-abs(t_value), df = n - 2L)
+      }
+    }
+    group_mean <- function(d) if (any(x == d)) mean(y[x == d]) else NA_real_
+    data.frame(chrom = pairs$chrom[[i]], intron_start1 = pairs$intron_start1[[i]],
+      intron_end1 = pairs$intron_end1[[i]],
+      strands = paste(sort(unique(keys$strand[keys$pair == id]), method = "radix"), collapse = ","), n = n,
+      n_dosage0 = sum(x == 0), n_dosage1 = sum(x == 1), n_dosage2 = sum(x == 2),
+      mean_rate_dosage0 = group_mean(0), mean_rate_dosage1 = group_mean(1), mean_rate_dosage2 = group_mean(2),
+      beta = beta, se = se, t_value = t_value, p_value = p_value, q_value_bh = NA_real_,
+      status = status, stringsAsFactors = FALSE)
+  })
+  out <- do.call(rbind, rows)
+  tested <- is.finite(out$p_value)
+  out$q_value_bh[tested] <- stats::p.adjust(out$p_value[tested], method = "BH")
+  out <- out[order(is.na(out$p_value), out$p_value, out$intron_start1, out$intron_end1), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
 variant_aggregate <- function(variant, genotypes, samples, sample_results, cfg, rna_supported) {
   groups <- sort(unique(genotypes$genotype))
   summary <- list(); depths <- list(); junctions <- list(); bases <- list()
