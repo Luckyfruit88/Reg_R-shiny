@@ -2,8 +2,8 @@
 # Deterministic mock orchestration tests exercise full-size selection, streaming,
 # atomic progress and interruption/resume without requiring study data or tools.
 # --native additionally processes 36 synthetic BAMs and an indexed native VCF.
-source("backend.R", encoding = "UTF-8")
-source("variant_backend.R", encoding = "UTF-8")
+source("src/backend.R", encoding = "UTF-8")
+source("src/variant_backend.R", encoding = "UTF-8")
 
 all_expect_error <- function(expr, text = NULL) {
   e <- tryCatch({ force(expr); NULL }, error = function(e) e)

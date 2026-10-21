@@ -2,8 +2,8 @@
 # Synthetic fixtures contain no study data. Native checks require bcftools,
 # samtools and RegTools; --unit explicitly runs only parser/aggregation checks,
 # Model 1 gate tests and the Model 1 null-calibration simulations.
-source("backend.R", encoding = "UTF-8")
-source("variant_backend.R", encoding = "UTF-8")
+source("src/backend.R", encoding = "UTF-8")
+source("src/variant_backend.R", encoding = "UTF-8")
 
 expect_error <- function(expr, text = NULL) {
   e <- tryCatch({ force(expr); NULL }, error = function(e) e)

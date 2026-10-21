@@ -62,6 +62,10 @@ BAM counts use retained primary alignment records (paired ends separately), with
 
 GENCODE source: [human release 48](https://www.gencodegenes.org/human/release_48.html). Native tools: [RegTools](https://github.com/griffithlab/regtools), [samtools](https://www.htslib.org/), [bcftools](https://samtools.github.io/bcftools/).
 
+## Repository layout
+
+`app.R` composes the application and `run_app.R` launches it. Application code is in `src/` (`*_backend.R` computation, `*_module.R` Shiny modules, plus `data_sources.R`, `variant_jobs.R` and `runtime_setup.R`); helper programs are in `scripts/`, tests in `tests/`, configuration templates in `config/` and `examples/`, and the stylesheet in `www/`. Run `Rscript tests/run_tests.R` from the repository root; see [Validation instructions](docs/VALIDATION.md).
+
 ## License
 
 Reg_Shiny source code and documentation are licensed under the [MIT License](LICENSE). Upstream attribution is recorded in [third-party notices](THIRD_PARTY_NOTICES.txt).

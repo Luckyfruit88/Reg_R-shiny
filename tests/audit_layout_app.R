@@ -3,9 +3,9 @@
 # cohort data or jobs.
 suppressPackageStartupMessages(library(shiny))
 suppressPackageStartupMessages(library(bslib))
-source("annotation_module.R")
-source("splice_evidence_module.R")
-source("variant_module.R")
+source("src/annotation_module.R")
+source("src/splice_evidence_module.R")
+source("src/variant_module.R")
 
 n <- 75L
 calls <- data.frame(

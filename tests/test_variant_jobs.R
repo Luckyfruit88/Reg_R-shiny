@@ -1,5 +1,5 @@
 # Synthetic scheduler tests. No SCC submission or study data are used.
-source("backend.R"); source("variant_backend.R"); source("variant_jobs.R")
+source("src/backend.R"); source("src/variant_backend.R"); source("src/variant_jobs.R")
 expect_error <- function(expr, pattern = NULL) {
   error <- tryCatch({ force(expr); NULL }, error = function(e) e)
   stopifnot(inherits(error, "error"))
@@ -63,7 +63,7 @@ local({
   }, .GlobalEnv)
   cfg <- default_demo_config(); cfg$demo <- FALSE; cfg$data_source_id <- "synthetic-profile"
   submit <- function(i) submit_variant_job(resources, variants[i, , drop = FALSE], cfg,
-    normalizePath("backend.R"), normalizePath("variant_backend.R"), normalizePath("variant_jobs.R"), root,
+    normalizePath("src/backend.R"), normalizePath("src/variant_backend.R"), normalizePath("src/variant_jobs.R"), root,
     ui_controls = list(sampling_mode = "all"))
   first <- submit(1L); second <- submit(2L)
   request <- job_request(first$job_dir); request2 <- job_request(second$job_dir)

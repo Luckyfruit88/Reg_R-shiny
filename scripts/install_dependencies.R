@@ -1,7 +1,7 @@
 # Optional only: SCC R 4.5.2 already provides these shared packages.
 # Run from the clone root. The package list lives only in runtime_setup.R.
 deps <- new.env()
-sys.source("runtime_setup.R", envir = deps)
+sys.source("src/runtime_setup.R", envir = deps)
 packages <- deps$regshiny_required_packages()
 missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
 if (requireNamespace("shiny", quietly = TRUE) && utils::packageVersion("shiny") < deps$regshiny_min_shiny_version)

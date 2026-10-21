@@ -231,9 +231,9 @@ data_source_run <- function(script, args, log_path, timeout = 3600) {
 data_source_api <- function(app_dir) {
   e <- new.env(parent = globalenv())
   for (name in c("backend.R", "variant_backend.R", "annotation_backend.R", "splice_evidence_backend.R"))
-    sys.source(file.path(app_dir, name), envir = e)
-  e$.regshiny_variant_source <- file.path(app_dir, "variant_backend.R")
-  e$.regshiny_annotation_source <- file.path(app_dir, "annotation_backend.R")
+    sys.source(file.path(app_dir, "src", name), envir = e)
+  e$.regshiny_variant_source <- file.path(app_dir, "src", "variant_backend.R")
+  e$.regshiny_annotation_source <- file.path(app_dir, "src", "annotation_backend.R")
   e
 }
 

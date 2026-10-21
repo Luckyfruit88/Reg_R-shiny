@@ -6,7 +6,7 @@
     if (is.character(path) && length(path) == 1L) path else ""
   }, character(1))
   paths <- paths[nzchar(paths)]
-  normalizePath(if (length(paths)) tail(paths, 1L) else "annotation_backend.R", mustWork = FALSE)
+  normalizePath(if (length(paths)) tail(paths, 1L) else "src/annotation_backend.R", mustWork = FALSE)
 })
 
 annotation_integer <- function(x, name, lower = 1L, upper = 2e9) {
@@ -21,7 +21,7 @@ annotation_file_state <- function(path) {
   list(path = path, size_bytes = unname(s$size), mtime = as.numeric(s$mtime))
 }
 
-annotation_command <- function(args, script = file.path(dirname(.regshiny_annotation_source), "scripts", "build_annotation.py")) {
+annotation_command <- function(args, script = file.path(dirname(dirname(.regshiny_annotation_source)), "scripts", "build_annotation.py")) {
   python <- Sys.getenv("REGSHINY_PYTHON", "")
   if (!nzchar(python)) python <- unname(Sys.which("python3"))
   if (!nzchar(python) || !file.exists(python)) stop("Python 3 is required for read-only GENCODE annotation queries.")
@@ -50,7 +50,7 @@ load_annotation_resources <- function(db = Sys.getenv("REGSHINY_ANNOTATION_DB"))
     stop("The annotation resource must be GENCODE v48 on GRCh38.")
   structure(list(db = db, build = metadata$build, release = metadata$release,
     metadata = metadata, source_state = state,
-    query_script = file.path(dirname(.regshiny_annotation_source), "scripts", "build_annotation.py")),
+    query_script = file.path(dirname(dirname(.regshiny_annotation_source)), "scripts", "build_annotation.py")),
     class = "regshiny_annotation_resources")
 }
 

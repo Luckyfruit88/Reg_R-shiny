@@ -4,7 +4,7 @@ All paths refer to files on the host running Reg_Shiny (SCC for the documented w
 
 ## Default FHS connection
 
-The FHS preset uses the original RNA-ID / BAM-location CSVs under the project's shared FHS RNA-seq `IDs` directory and the sequencing project's `freeze_10a/passgt.minDP10.fhsids` chromosome VCFs. It reconstructs each member's manifests from those original sources. The exact default paths are centralized in `default_fhs_spec()` in `data_sources.R`.
+The FHS preset uses the original RNA-ID / BAM-location CSVs under the project's shared FHS RNA-seq `IDs` directory and the sequencing project's `freeze_10a/passgt.minDP10.fhsids` chromosome VCFs. It reconstructs each member's manifests from those original sources. The exact default paths are centralized in `default_fhs_spec()` in `src/data_sources.R`.
 
 The preset includes chr1–22 and chrX and all unique DNA/RNA matches with a readable BAM and existing index. It does not use the old 8,973-pair candidate list or filter to a covariate-selected research cohort. Preparation records exclusions and actual counts privately. Every member still requires the source owners' existing SCC data permissions.
 

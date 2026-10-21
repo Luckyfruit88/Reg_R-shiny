@@ -3,7 +3,7 @@ needed <- c("shiny", "bslib", "DT", "future", "promises", "later", "jsonlite")
 missing <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing)) stop("SPLICE_UI_DEPENDENCIES_MISSING: ", paste(missing, collapse = ", "))
 suppressPackageStartupMessages(library(shiny))
-source("splice_evidence_module.R")
+source("src/splice_evidence_module.R")
 future::plan(future::sequential)
 scratch <- tempfile("splice-ui-"); dir.create(scratch)
 fixture_source <- file.path(scratch, "model.R")

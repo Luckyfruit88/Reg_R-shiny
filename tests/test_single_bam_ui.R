@@ -1,15 +1,15 @@
 # Native synthetic demo through the session-scoped Single BAM module.
 # This checks that namespacing/resource isolation did not alter the old metrics.
-source("runtime_setup.R")
+source("src/runtime_setup.R")
 regshiny_runtime_setup(strict_native = TRUE)
 suppressPackageStartupMessages(library(shiny))
 suppressPackageStartupMessages(library(bslib))
-source("annotation_module.R")
-backend_file <- normalizePath("backend.R", mustWork = TRUE)
+source("src/annotation_module.R")
+backend_file <- normalizePath("src/backend.R", mustWork = TRUE)
 backend <- new.env(parent = globalenv()); sys.source(backend_file, envir = backend)
-annotation_file <- normalizePath("annotation_backend.R", mustWork = TRUE)
+annotation_file <- normalizePath("src/annotation_backend.R", mustWork = TRUE)
 annotation_backend <- new.env(parent = globalenv()); sys.source(annotation_file, envir = annotation_backend)
-source("single_bam_module.R")
+source("src/single_bam_module.R")
 future::plan(future::sequential)
 unavailable <- simpleError("Synthetic profile has no DNA or GENCODE resource")
 bundle <- list(id = "synthetic-demo-profile", label = "Synthetic demo profile", bam_choices = character(),

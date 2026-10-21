@@ -2,7 +2,7 @@
 # DNA GT comes exclusively from the selected VCF record. RNA observations are
 # descriptive alignment evidence, never substituted for a missing DNA genotype.
 .regshiny_variant_source <- tryCatch(normalizePath(sys.frame(1L)$ofile, mustWork = TRUE),
-                                    error = function(e) normalizePath("variant_backend.R", mustWork = FALSE))
+                                    error = function(e) normalizePath("src/variant_backend.R", mustWork = FALSE))
 
 variant_lines <- function(x) {
   if (!nzchar(x)) character() else strsplit(sub("\n$", "", x), "\n", fixed = TRUE)[[1L]]

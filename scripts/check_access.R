@@ -1,7 +1,7 @@
 # Run from the clone root. This is a small source/runtime preflight, not a BAM audit.
-source("runtime_setup.R")
+source("src/runtime_setup.R")
 runtime <- regshiny_runtime_setup(strict_native = TRUE)
-source("data_sources.R")
+source("src/data_sources.R")
 spec <- default_fhs_spec()
 fields <- c("rna_map", "bam_map", "vcf_dir", "annotation_gtf", "reference_fasta")
 checks <- vapply(spec[fields], function(path) file.exists(path) && file.access(path, 4) == 0L, logical(1))
