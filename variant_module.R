@@ -63,6 +63,16 @@ variant_batch_submit <- function(api, resources, lines, settings, source_identit
   do.call(rbind, outcomes)
 }
 
+# Raw result tables (junctions, RNA bases and the sample/DNA-call audit). Kept as
+# a function so the browser layout fixture renders exactly these production tables.
+variant_result_tables_server <- function(output, result) {
+  for (name in c("junctions", "samples", "genotypes", "rna_bases")) local({
+    field <- name
+    output[[field]] <- DT::renderDT(result()[[field]], rownames = FALSE, selection = "none",
+      options = list(pageLength = 10, scrollX = TRUE))
+  })
+}
+
 variant_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::layout_sidebar(
@@ -853,11 +863,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     })
     output$groups <- DT::renderDT(display_groups(), rownames = FALSE, selection = "none",
       options = list(dom = "t", scrollX = TRUE, paging = FALSE))
-    for (name in c("junctions", "samples", "genotypes", "rna_bases")) local({
-      field <- name
-      output[[field]] <- DT::renderDT(result()[[field]], rownames = FALSE, selection = "none",
-        options = list(pageLength = 10, scrollX = TRUE))
-    })
+    variant_result_tables_server(output, result)
     association <- reactive({
       r <- result()
       tryCatch({

@@ -1,11 +1,18 @@
 # Shared runtime bootstrap for RStudio's Run App button and run_app.R.
 # Native module imports affect this R process and its children, not other sessions.
+# The single list of R package dependencies, also read by
+# scripts/install_dependencies.R and the CI workflow.
+regshiny_required_packages <- function()
+  c("shiny", "bslib", "DT", "data.table", "processx", "future", "promises", "jsonlite")
+regshiny_min_shiny_version <- "1.8.1"
+
 regshiny_runtime_setup <- function(strict_native = FALSE, import_scc_modules = TRUE) {
-  required <- c("shiny", "bslib", "DT", "data.table", "processx", "future", "promises", "jsonlite")
+  required <- regshiny_required_packages()
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing R packages: ", paste(missing, collapse = ", "),
     ". In SCC RStudio select R 4.5.2, or run scripts/install_dependencies.R in your own library.")
-  if (utils::packageVersion("shiny") < "1.8.1") stop("Reg_Shiny requires shiny >= 1.8.1.")
+  if (utils::packageVersion("shiny") < regshiny_min_shiny_version)
+    stop("Reg_Shiny requires shiny >= ", regshiny_min_shiny_version, ".")
   Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1")
   native <- c("samtools", "regtools", "bcftools", "python3")
   scheduler <- c("qsub", "qstat", "qacct")

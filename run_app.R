@@ -13,9 +13,7 @@ run_reg_shiny <- function(app_dir = .regshiny_launcher_dir, host = "127.0.0.1",
                           launch.browser = getOption("shiny.launch.browser", interactive())) {
   app_dir <- normalizePath(path.expand(app_dir), mustWork = TRUE)
   if (!file.exists(file.path(app_dir, "app.R"))) stop("app_dir must be the Reg_R-shiny checkout.")
-  runtime <- new.env(parent = globalenv())
-  sys.source(file.path(app_dir, "runtime_setup.R"), envir = runtime)
-  runtime$regshiny_runtime_setup()
+  # app.R performs the runtime initialization (runtime_setup.R) exactly once.
   # RStudio provides its own viewer/proxy through the standard Shiny launch option.
   shiny::runApp(appDir = app_dir, host = host, port = port, launch.browser = launch.browser)
 }

@@ -24,7 +24,6 @@
 *.bcf
 *.tbi
 /data/*
-!/data/README.txt
 
 # Analysis output, logs, and local caches
 /results/
@@ -34,6 +33,9 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Generated synthetic test evidence (browser screenshots, geometry JSON, logs)
+/test-artifacts/
 
 # Local deployment and generated validation evidence
 /config/runtime.Renviron

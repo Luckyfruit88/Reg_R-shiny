@@ -9,10 +9,7 @@ backend_file <- normalizePath("backend.R", mustWork = TRUE)
 backend <- new.env(parent = globalenv()); sys.source(backend_file, envir = backend)
 annotation_file <- normalizePath("annotation_backend.R", mustWork = TRUE)
 annotation_backend <- new.env(parent = globalenv()); sys.source(annotation_file, envir = annotation_backend)
-for (expression in parse("app.R")) {
-  if (is.call(expression) && identical(expression[[1L]], as.name("<-")) && is.symbol(expression[[2L]]) &&
-      as.character(expression[[2L]]) %in% c("single_bam_ui", "single_bam_server")) eval(expression)
-}
+source("single_bam_module.R")
 future::plan(future::sequential)
 unavailable <- simpleError("Synthetic profile has no DNA or GENCODE resource")
 bundle <- list(id = "synthetic-demo-profile", label = "Synthetic demo profile", bam_choices = character(),

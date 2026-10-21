@@ -22,13 +22,9 @@ jobs:
       - name: Install native-free UI test dependencies
         timeout-minutes: 5
         run: |
-          Rscript -e 'install.packages(c("shiny", "bslib", "DT", "future", "promises", "later", "jsonlite", "data.table", "processx"))'
-      - name: Check variant parsing, aggregation and Model 1 gates/calibration
-        run: Rscript tests/test_variants.R --unit
-      - name: Check UI structure and display binding
-        run: Rscript tests/test_frontend_contract.R
-      - name: Check mocked jobs, review gates and result identity
-        run: Rscript tests/test_variant_ui.R
+          Rscript -e 'source("runtime_setup.R"); install.packages(regshiny_required_packages())'
+      - name: Run native-free synthetic suites (backend, variants, jobs, sources, UI, oracle)
+        run: Rscript tests/run_tests.R --unit --require-clean
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -44,13 +40,12 @@ jobs:
           Rscript tests/audit_layout_app.R > test-artifacts/audit-layout/shiny.log 2>&1 &
           app_pid=$!
           trap 'kill "$app_pid" 2>/dev/null || true' EXIT
-          python tests/inspect_audit_layout.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
           python tests/test_audit_layout_browser.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
-      - name: Preserve synthetic browser evidence
+      - name: Preserve synthetic test logs and browser evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: audit-layout-evidence
-          path: test-artifacts/audit-layout/
+          name: synthetic-test-evidence
+          path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 7

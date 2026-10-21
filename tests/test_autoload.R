@@ -1,8 +1,10 @@
 args <- commandArgs(trailingOnly = TRUE)
 app <- normalizePath(args[[1L]], mustWork = TRUE)
 expressions <- parse(app)
+# Deployment settings must load before runtime_setup.R initializes packages.
 stopifnot(identical(expressions[[1L]][[1L]], as.name("local")),
-          identical(expressions[[2L]][[2L]], as.name("needed")))
+          identical(expressions[[2L]][[1L]], as.name("source")),
+          identical(expressions[[2L]][[2L]], "runtime_setup.R"))
 bootstrap <- expressions[[1L]]
 fixture <- tempfile("regshiny_autoload_"); dir.create(fixture)
 oldwd <- getwd(); setwd(fixture)

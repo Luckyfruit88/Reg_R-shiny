@@ -1,7 +1,10 @@
 # Optional only: SCC R 4.5.2 already provides these shared packages.
-packages <- c("shiny", "bslib", "DT", "data.table", "processx", "future", "promises", "jsonlite")
+# Run from the clone root. The package list lives only in runtime_setup.R.
+deps <- new.env()
+sys.source("runtime_setup.R", envir = deps)
+packages <- deps$regshiny_required_packages()
 missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
-if (requireNamespace("shiny", quietly = TRUE) && utils::packageVersion("shiny") < "1.8.1")
+if (requireNamespace("shiny", quietly = TRUE) && utils::packageVersion("shiny") < deps$regshiny_min_shiny_version)
   missing <- union(missing, "shiny")
 if (!length(missing)) {
   message("Reg_Shiny R dependencies are already available.")
