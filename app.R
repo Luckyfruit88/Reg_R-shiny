@@ -20,10 +20,8 @@ local({
   }
 })
 
-needed <- c("shiny", "bslib", "DT", "data.table", "processx", "future", "promises", "jsonlite")
-missing <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
-if (length(missing)) stop("Missing R packages: ", paste(missing, collapse = ", "), ". Install the dependencies listed in the README.")
-if (utils::packageVersion("shiny") < "1.8.1") stop("shiny >= 1.8.1 is required.")
+# The only full runtime initialization: dependency checks, SCC module paths and
+# thread limits. run_app.R and RStudio's Run App button both arrive here.
 source("runtime_setup.R", local = TRUE)
 regshiny_runtime_setup()
 library(shiny)

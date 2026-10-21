@@ -22,7 +22,7 @@ jobs:
       - name: Install native-free UI test dependencies
         timeout-minutes: 5
         run: |
-          Rscript -e 'install.packages(c("shiny", "bslib", "DT", "future", "promises", "later", "jsonlite", "data.table", "processx"))'
+          Rscript -e 'source("runtime_setup.R"); install.packages(regshiny_required_packages())'
       - name: Check variant parsing, aggregation and Model 1 gates/calibration
         run: Rscript tests/test_variants.R --unit
       - name: Check UI structure and display binding
