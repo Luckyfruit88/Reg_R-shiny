@@ -1,5 +1,5 @@
 # Run from the project directory: Rscript tests/run_tests.R
-# Core tests need R; integration tests additionally need all environment.yml dependencies.
+# Core tests need R; integration tests additionally need samtools/1.23 and regtools/1.0.0.
 source("backend.R", encoding = "UTF-8")
 cat("Core CIGAR / coordinate tests\n")
 a <- parse_cigar("20M100N30M", 181L)

@@ -203,7 +203,7 @@ single_bam_server <- function(id, bundle, is_active = reactive(TRUE)) {
     req(is_active())
     cfg <- current_config()
     if (!cfg$demo && (is.null(cfg$bam) || !cfg$bam %in% unname(bams))) {
-      showNotification("No available BAM is selected. Configure REGTOOLS_BAM_DIR and restart the app.", type = "error")
+      showNotification("No available BAM is selected. Connect a dataset with BAM files in Data sources.", type = "error")
       bslib::update_task_button("run", state = "ready", session = session)
       return()
     }

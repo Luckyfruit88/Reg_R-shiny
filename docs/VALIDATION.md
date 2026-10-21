@@ -43,6 +43,23 @@ Rscript tests/test_single_bam_ui.R
 
 Run any runtime/launcher-specific tests listed in `tests/` alongside these suites. Generated fixtures stay in temporary directories. Do not run uncontrolled full-cohort analyses on a login node.
 
+## Frontend and browser checks
+
+`tests/test_frontend_contract.R` renders the production WGS UI, checks unique namespaced controls and executes the production display-control and display-range expressions. `tests/test_variant_ui.R` uses synthetic job mocks for cancellation, stale batch confirmation, replay, source deactivation, independent per-line outcomes and viewed-result identity. Neither opens cohort data or submits SCC jobs, and neither replaces the native `tests/test_single_bam_ui.R` suite.
+
+The audit-table browser regression starts a synthetic fixture (`tests/audit_layout_app.R`) that uses the production `variant_ui()` and the production audit-table renderer with 75 synthetic rows and long synthetic paths. Chromium (Playwright) measures each DT output, its footer and the next heading at 10/25/50/100 rows, with pagination, horizontal scrolling, server-side search, tab switching, laptop/narrow viewports and 2x CSS zoom, first without `www/frontend.css` (reproduction control) and then with it. The CSS must keep overriding DT's `.html-fill-container > .html-fill-item.datatables { flex-basis: 400px; }` for the namespaced `samples` and `genotypes` outputs only; it must not impose fixed row heights or change global card/plot sizing. Long paths stay on one line and use horizontal scrolling.
+
+```bash
+python -m pip install playwright==1.58.0
+python -m playwright install chromium
+Rscript tests/audit_layout_app.R &
+python tests/test_audit_layout_browser.py
+```
+
+Screenshots, geometry JSON and the fixture log are written to the ignored `test-artifacts/` directory (and uploaded as a short-lived CI artifact). Synthetic browser checks do not certify the SCC session's installed package versions.
+
+Manual browser acceptance after a frontend change, in a real SCC RStudio session: drag the Single BAM display slider and verify the plot axes change without changing metrics; open and cancel the batch review; review batch A, modify inputs and verify nothing is submitted; confirm once and check independent job receipts; open saved job A while the form contains B; inspect the layout at laptop width and 200% zoom; verify modal focus and keyboard navigation.
+
 ## SCC acceptance
 
 A release check should use a fresh clone/checkout in an independent writable path, clear personal `REGSHINY_*` deployment overrides, then prepare FHS from its original CSV and VCF/BAM sources. Validate a real coordinate lookup and bounded RNA preview, and also connect custom BAM/VCF data through explicit and read-group sample matching. Confirm that genotype groups, read-depth units, known-zero/missing states and data-source identity remain correct.
