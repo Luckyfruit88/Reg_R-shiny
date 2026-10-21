@@ -1,22 +1,11 @@
 # Browser-only synthetic fixture. Render the production WGS UI and production
-# audit-table expressions. No app.R startup, native tools, cohort data or jobs.
+# audit tables (variant_result_tables_server). No app.R startup, native tools,
+# cohort data or jobs.
 suppressPackageStartupMessages(library(shiny))
 suppressPackageStartupMessages(library(bslib))
 source("annotation_module.R")
 source("splice_evidence_module.R")
 source("variant_module.R")
-
-# Reuse the production table renderer, rather than a simplified HTML imitation.
-module_call <- Filter(function(x) is.call(x) &&
-  identical(x[[1L]], quote(shiny::moduleServer)), as.list(body(variant_server))[-1L])
-stopifnot(length(module_call) == 1L)
-module_body <- module_call[[1L]][[3L]][[3L]]
-renderers <- Filter(function(x) is.call(x) && identical(x[[1L]], as.name("for")) &&
-  identical(x[[2L]], as.name("name")) &&
-  identical(x[[3L]], quote(c("junctions", "samples", "genotypes", "rna_bases"))),
-  as.list(module_body)[-1L])
-stopifnot(length(renderers) == 1L)
-audit_renderer <- renderers[[1L]]
 
 n <- 75L
 calls <- data.frame(
@@ -48,7 +37,7 @@ ui <- function(request) {
 server <- function(input, output, session) {
   moduleServer("audit", function(input, output, session) {
     result <- reactive(fixture)
-    eval(audit_renderer, envir = environment())
+    variant_result_tables_server(output, result)
   })
 }
 message("Audit fixture package versions: ", paste(vapply(c("shiny", "bslib", "DT", "htmlwidgets"),
