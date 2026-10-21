@@ -23,12 +23,8 @@ jobs:
         timeout-minutes: 5
         run: |
           Rscript -e 'source("runtime_setup.R"); install.packages(regshiny_required_packages())'
-      - name: Check variant parsing, aggregation and Model 1 gates/calibration
-        run: Rscript tests/test_variants.R --unit
-      - name: Check UI structure and display binding
-        run: Rscript tests/test_frontend_contract.R
-      - name: Check mocked jobs, review gates and result identity
-        run: Rscript tests/test_variant_ui.R
+      - name: Run native-free synthetic suites (backend, variants, jobs, sources, UI, oracle)
+        run: Rscript tests/run_tests.R --unit
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -44,7 +40,6 @@ jobs:
           Rscript tests/audit_layout_app.R > test-artifacts/audit-layout/shiny.log 2>&1 &
           app_pid=$!
           trap 'kill "$app_pid" 2>/dev/null || true' EXIT
-          python tests/inspect_audit_layout.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
           python tests/test_audit_layout_browser.py || { tail -n 100 test-artifacts/audit-layout/shiny.log; exit 1; }
       - name: Preserve synthetic browser evidence
         if: always()

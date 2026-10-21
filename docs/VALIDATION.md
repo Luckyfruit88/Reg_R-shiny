@@ -15,33 +15,16 @@ Loading modules in the RStudio Terminal does not change the already-running R Co
 
 ## Synthetic checks
 
-The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application:
+One command runs every synthetic R suite and the independent Python arithmetic oracle, each in its own process, and fails if any suite fails or if the run leaves new files in `git status`:
 
 ```bash
-Rscript tests/run_tests.R
-Rscript tests/test_contigs.R
-Rscript tests/test_variants.R
-Rscript tests/test_rna_bases.R
-Rscript tests/test_all_samples.R --native
-Rscript tests/test_variant_jobs.R
-Rscript tests/test_parallel_variant_jobs.R
-Rscript tests/test_annotations.R
-Rscript tests/test_splice_evidence.R --native
-Rscript tests/test_data_sources.R --native
+Rscript tests/run_tests.R          # full: native suites need samtools/1.23 regtools/1.0.0 bcftools/1.23
+Rscript tests/run_tests.R --unit   # native-free subset, as run in CI
 ```
 
-The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics:
+The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
 
-```bash
-Rscript tests/test_autoload.R app.R
-Rscript tests/test_variant_ui.R
-Rscript tests/test_annotation_ui.R
-Rscript tests/test_splice_evidence_ui.R
-Rscript tests/test_data_sources_ui.R
-Rscript tests/test_single_bam_ui.R
-```
-
-Run any runtime/launcher-specific tests listed in `tests/` alongside these suites. Generated fixtures stay in temporary directories. Do not run uncontrolled full-cohort analyses on a login node.
+Generated fixtures stay in temporary directories. Do not run uncontrolled full-cohort analyses on a login node.
 
 ## Frontend and browser checks
 
