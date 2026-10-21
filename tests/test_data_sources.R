@@ -1,7 +1,7 @@
 # Rscript tests/test_data_sources.R [--native]
 # Source/profile tests use only synthetic IDs and reference headers.
 # --native uses real samtools/bcftools; otherwise leaf header commands are mocked.
-source("data_sources.R")
+source("src/data_sources.R")
 
 source_expect_error <- function(expr, text = NULL) {
   error <- tryCatch({ force(expr); NULL }, error = function(e) e)

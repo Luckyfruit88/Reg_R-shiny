@@ -61,6 +61,10 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 [测试与验收说明](docs/VALIDATION.md) · [完整指标定义](docs/METRICS.md)
 
+## 仓库结构
+
+`app.R` 负责组装应用，`run_app.R` 是启动器。应用代码在 `src/`（`*_backend.R` 为计算，`*_module.R` 为 Shiny 模块，另有 `data_sources.R`、`variant_jobs.R`、`runtime_setup.R`）；辅助程序在 `scripts/`，测试在 `tests/`，配置模板在 `config/` 和 `examples/`，样式表在 `www/`。在仓库根目录运行 `Rscript tests/run_tests.R` 执行测试。
+
 ## 许可证
 
 Reg_Shiny 的源代码和文档采用 [MIT 许可证](LICENSE)。上游来源与许可声明见 [第三方声明](THIRD_PARTY_NOTICES.txt)。

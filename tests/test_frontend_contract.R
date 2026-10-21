@@ -1,11 +1,11 @@
 # Native-free structure and dynamic-input checks. No app startup or SCC access.
 suppressPackageStartupMessages(library(shiny))
 suppressPackageStartupMessages(library(bslib))
-source("annotation_module.R")
-source("splice_evidence_module.R")
-source("variant_module.R")
-source("single_bam_module.R")
-for (file in c("app.R", "variant_module.R", "single_bam_module.R", "tests/test_variant_ui.R")) parse(file)
+source("src/annotation_module.R")
+source("src/splice_evidence_module.R")
+source("src/variant_module.R")
+source("src/single_bam_module.R")
+for (file in c("app.R", "src/variant_module.R", "src/single_bam_module.R", "tests/test_variant_ui.R")) parse(file)
 ui_text <- as.character(variant_ui("contract"))
 for (id in c("query", "batch_queries", "batch_submit", "saved_job", "open_job", "resume_job", "view_context")) {
   needle <- paste0('id="contract-', id, '"')

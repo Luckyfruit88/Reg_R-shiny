@@ -1,6 +1,6 @@
 # Rscript tests/test_annotations.R
 # Public synthetic GTF fixture: no controlled data and no BAM analysis.
-source("annotation_backend.R", encoding = "UTF-8")
+source("src/annotation_backend.R", encoding = "UTF-8")
 
 annotation_expect_error <- function(expr, text = NULL) {
   e <- tryCatch({ force(expr); NULL }, error = function(e) e)

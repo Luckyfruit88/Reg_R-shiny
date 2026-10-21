@@ -11,7 +11,7 @@ module load R/4.5.2 samtools/1.23 regtools/1.0.0 bcftools/1.23
 Rscript scripts/check_access.R
 ```
 
-Loading modules in the RStudio Terminal does not change the already-running R Console. `runtime_setup.R` performs the corresponding native-path initialization inside the R process. It does not install software or import the complete login environment.
+Loading modules in the RStudio Terminal does not change the already-running R Console. `src/runtime_setup.R` performs the corresponding native-path initialization inside the R process. It does not install software or import the complete login environment.
 
 ## Synthetic checks
 

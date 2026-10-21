@@ -3,7 +3,7 @@ needed <- c("shiny", "bslib", "future", "promises", "later", "jsonlite")
 missing <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing)) stop("DATA_SOURCE_UI_DEPENDENCIES_MISSING: ", paste(missing, collapse = ", "))
 suppressPackageStartupMessages(library(shiny))
-source("data_sources_module.R")
+source("src/data_sources_module.R")
 future::plan(future::sequential)
 scratch <- tempfile("source-ui-"); dir.create(scratch)
 source_file <- file.path(scratch, "sources_fixture.R")

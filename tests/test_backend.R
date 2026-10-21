@@ -3,7 +3,7 @@
 # --unit skips the native samtools / RegTools section and the optional real-BAM
 # header check (REGTOOLS_TEST_BAM).
 unit_only <- "--unit" %in% commandArgs(trailingOnly = TRUE)
-source("backend.R", encoding = "UTF-8")
+source("src/backend.R", encoding = "UTF-8")
 cat("Core CIGAR / coordinate tests\n")
 a <- parse_cigar("20M100N30M", 181L)
 stopifnot(identical(as.integer(a$introns[1, ]), c(200L, 300L)))

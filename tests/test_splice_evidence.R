@@ -1,7 +1,7 @@
 # Rscript tests/test_splice_evidence.R [--native]
 # Synthetic reference and saved-result fixtures; no BAM analysis or study data.
 # --native exercises real samtools faidx, otherwise only that leaf call is mocked.
-source("splice_evidence_backend.R")
+source("src/splice_evidence_backend.R")
 
 splice_expect_error <- function(expr, text = NULL) {
   e <- tryCatch({ force(expr); NULL }, error = function(e) e)

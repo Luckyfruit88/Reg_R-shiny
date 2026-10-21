@@ -4,7 +4,7 @@ missing <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing)) stop("ANNOTATION_UI_DEPENDENCIES_MISSING: ", paste(missing, collapse = ", "))
 suppressPackageStartupMessages(library(shiny))
 suppressPackageStartupMessages(library(bslib))
-source("annotation_module.R")
+source("src/annotation_module.R")
 future::plan(future::sequential)
 fixture_dir <- tempfile("regshiny-annotation-ui-"); dir.create(fixture_dir)
 fixture_file <- file.path(fixture_dir, "annotation_fixture.R")

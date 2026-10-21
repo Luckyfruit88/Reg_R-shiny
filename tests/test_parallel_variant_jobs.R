@@ -1,6 +1,6 @@
 # Independent regression: an old scheduler probe must not overwrite a resumed
 # attempt published by another RStudio process. Synthetic state only; no SGE.
-source("variant_jobs.R")
+source("src/variant_jobs.R")
 work <- tempfile("regshiny-parallel-probe-")
 dir.create(work, mode = "0700")
 

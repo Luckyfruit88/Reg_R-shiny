@@ -22,7 +22,7 @@ jobs:
       - name: Install native-free UI test dependencies
         timeout-minutes: 5
         run: |
-          Rscript -e 'source("runtime_setup.R"); install.packages(regshiny_required_packages())'
+          Rscript -e 'source("src/runtime_setup.R"); install.packages(regshiny_required_packages())'
       - name: Run native-free synthetic suites (backend, variants, jobs, sources, UI, oracle)
         run: Rscript tests/run_tests.R --unit --require-clean
       - uses: actions/setup-python@v5
