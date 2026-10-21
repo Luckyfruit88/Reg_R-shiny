@@ -15,12 +15,15 @@ Loading modules in the RStudio Terminal does not change the already-running R Co
 
 ## Synthetic checks
 
-One command runs every synthetic R suite and the independent Python arithmetic oracle, each in its own process, and fails if any suite fails or if the run leaves new files in `git status`:
+One command runs every synthetic R suite and the independent Python arithmetic oracle, each in its own process, and fails if any suite fails or if the run changes the git worktree (new, removed or rewritten status entries, compared by content):
 
 ```bash
-Rscript tests/run_tests.R          # full: native suites need samtools/1.23 regtools/1.0.0 bcftools/1.23
-Rscript tests/run_tests.R --unit   # native-free subset, as run in CI
+Rscript tests/run_tests.R                  # full: native suites need samtools/1.23 regtools/1.0.0 bcftools/1.23
+Rscript tests/run_tests.R --unit           # native-free subset
+Rscript tests/run_tests.R --unit --require-clean   # as run in CI: worktree must be clean before and after
 ```
+
+Use `--require-clean` from a clean checkout for release acceptance. Without it, local changes are allowed and only reported as unaltered. A git query that fails is reported as unverified and fails the run. Full per-suite logs are kept in the ignored `test-artifacts/test-runs/<run>/` directory; the terminal shows a summary and the tail of each failing log.
 
 The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
 
@@ -35,9 +38,15 @@ The audit-table browser regression starts a synthetic fixture (`tests/audit_layo
 ```bash
 python -m pip install playwright==1.58.0
 python -m playwright install chromium
-Rscript tests/audit_layout_app.R &
-python tests/test_audit_layout_browser.py
+mkdir -p test-artifacts/audit-layout
+Rscript tests/audit_layout_app.R > test-artifacts/audit-layout/shiny.log 2>&1 &
+app_pid=$!
+trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+python tests/test_audit_layout_browser.py || tail -n 100 test-artifacts/audit-layout/shiny.log
+kill "$app_pid"; trap - EXIT
 ```
+
+This mirrors the CI step: the fixture's log is kept and the fixture is stopped afterwards, so a later run cannot connect to a stale instance on port 8765.
 
 Screenshots, geometry JSON and the fixture log are written to the ignored `test-artifacts/` directory (and uploaded as a short-lived CI artifact). Synthetic browser checks do not certify the SCC session's installed package versions.
 
