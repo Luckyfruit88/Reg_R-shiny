@@ -14,7 +14,7 @@ regshiny_runtime_setup <- function(strict_native = FALSE, import_scc_modules = T
   if (utils::packageVersion("shiny") < regshiny_min_shiny_version)
     stop("Reg_Shiny requires shiny >= ", regshiny_min_shiny_version, ".")
   Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1")
-  native <- c("samtools", "regtools", "bcftools", "python3")
+  native <- c("samtools", "regtools", "bcftools", "featureCounts", "python3")
   scheduler <- c("qsub", "qstat", "qacct")
   absent <- function(names) names[!nzchar(Sys.which(names))]
   is_scc <- dir.exists("/share/module.8") && file.exists("/bin/bash")
@@ -24,7 +24,7 @@ regshiny_runtime_setup <- function(strict_native = FALSE, import_scc_modules = T
     # native-library and Grid Engine locations are needed by the application.
     keys <- c("PATH", "LD_LIBRARY_PATH", "SGE_ROOT", "SGE_CELL", "SGE_QMASTER_PORT", "SGE_EXECD_PORT")
     py <- "import json,os; print(json.dumps({k:os.environ.get(k,'') for k in ['PATH','LD_LIBRARY_PATH','SGE_ROOT','SGE_CELL','SGE_QMASTER_PORT','SGE_EXECD_PORT']}))"
-    shell <- paste("module load samtools/1.23 regtools/1.0.0 bcftools/1.23 && python3 -c", shQuote(py))
+    shell <- paste("module load samtools/1.23 regtools/1.0.0 bcftools/1.23 subread/2.0.3 && python3 -c", shQuote(py))
     result <- tryCatch(processx::run("/bin/bash", c("-lc", shell), timeout = 60,
       error_on_status = FALSE, cleanup_tree = FALSE), error = function(e) e)
     if (inherits(result, "error")) module_error <- conditionMessage(result) else if (result$status != 0L) {
@@ -45,7 +45,7 @@ regshiny_runtime_setup <- function(strict_native = FALSE, import_scc_modules = T
   missing_native <- absent(native)
   if (length(missing_native)) {
     message <- paste0("Native tools unavailable: ", paste(missing_native, collapse = ", "),
-      ". Configure the SCC RStudio session with samtools/1.23 regtools/1.0.0 bcftools/1.23.")
+      ". Configure the SCC RStudio session with samtools/1.23 regtools/1.0.0 bcftools/1.23 subread/2.0.3.")
     if (strict_native) stop(message, if (!is.null(module_error)) paste0(" ", module_error))
     warning(message, call. = FALSE)
   }

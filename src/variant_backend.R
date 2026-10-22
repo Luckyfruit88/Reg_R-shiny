@@ -275,6 +275,28 @@ variant_format_p <- function(p, floor = variant_association_gates()$p_display_fl
   out
 }
 
+# OLS of y on additive dosage x, shared by both Model 1 outcomes. Callers apply
+# their gates first; this returns OK with beta/se/t/p, or PERFECT_FIT (beta kept).
+variant_fit_dosage <- function(x, y, gates) {
+  n <- length(x)
+  out <- list(status = "OK", beta = NA_real_, se = NA_real_, t_value = NA_real_,
+              p_value = NA_real_, log10_p_value = NA_real_)
+  sxx <- sum((x - mean(x))^2)
+  tss <- sum((y - mean(y))^2)
+  out$beta <- sum((x - mean(x)) * (y - mean(y))) / sxx
+  rss <- sum((y - mean(y) - out$beta * (x - mean(x)))^2)
+  # Relative tolerance: floating-point residue of an exact fit is not variance.
+  if (n <= 2L || rss <= gates$perfect_fit_rel_tol * tss) {
+    out$status <- "PERFECT_FIT"
+  } else {
+    out$se <- sqrt(rss / (n - 2L) / sxx); out$t_value <- out$beta / out$se
+    # Log scale keeps the magnitude when the p-value underflows double precision.
+    log_p <- min(0, log(2) + stats::pt(-abs(out$t_value), df = n - 2L, log.p = TRUE))
+    out$p_value <- exp(log_p); out$log10_p_value <- log_p / log(10)
+  }
+  out
+}
+
 # Model 1: per-sample exact junction reads per 100 denominator reads ~ dosage,
 # fitted by ordinary least squares for each observed boundary pair (strands
 # combined, as in the single-BAM exact count). Unadjusted: no age, sex, batch,
@@ -332,19 +354,9 @@ variant_genotype_association <- function(result, min_samples = 3L,
       if (n_nonzero < gates$min_nonzero_samples || total_exact < gates$min_total_exact_reads) "LOW_SUPPORT" else
       if (length(unique(y)) < 2L) "CONSTANT_OUTCOME" else "OK"
     if (status == "OK") {
-      sxx <- sum((x - mean(x))^2)
-      tss <- sum((y - mean(y))^2)
-      beta <- sum((x - mean(x)) * (y - mean(y))) / sxx
-      rss <- sum((y - mean(y) - beta * (x - mean(x)))^2)
-      # Relative tolerance: floating-point residue of an exact fit is not variance.
-      if (n <= 2L || rss <= gates$perfect_fit_rel_tol * tss) {
-        status <- "PERFECT_FIT"
-      } else {
-        se <- sqrt(rss / (n - 2L) / sxx); t_value <- beta / se
-        # Log scale keeps the magnitude when the p-value underflows double precision.
-        log_p <- min(0, log(2) + stats::pt(-abs(t_value), df = n - 2L, log.p = TRUE))
-        p_value <- exp(log_p); log10_p <- log_p / log(10)
-      }
+      fit <- variant_fit_dosage(x, y, gates)
+      status <- fit$status; beta <- fit$beta; se <- fit$se; t_value <- fit$t_value
+      p_value <- fit$p_value; log10_p <- fit$log10_p_value
     }
     data.frame(chrom = pairs$chrom[[i]], intron_start1 = pairs$intron_start1[[i]],
       intron_end1 = pairs$intron_end1[[i]],
@@ -362,6 +374,235 @@ variant_genotype_association <- function(result, min_samples = 3L,
   tested <- out$status == "OK"
   out$q_value_bh[tested] <- stats::p.adjust(out$p_value[tested], method = "BH")
   out <- out[order(!tested, out$log10_p_value, out$intron_start1, out$intron_end1), , drop = FALSE]
+  rownames(out) <- NULL
+  finish(out)
+}
+
+# Legacy splice-site ratio (FHS Splice_site_legacy_method_20261007): reads in a
+# 25 bp intron bin and the adjacent 25 bp exon bin at one splice site, counted
+# by featureCounts with the historical options; ratio = 1 - intron/exon.
+# The read filters are frozen here and are independent of the UI read filters.
+variant_ratio_parameters <- function() list(
+  bin_width = 25L,
+  extraction_flags = c("-F", "268", "-f", "1", "-f", "2", "-q", "5"),
+  featurecounts_options = c("-p", "-O", "-f", "-s", "2", "-C", "-B", "--primary", "-T", "1"),
+  # Paired-library flags are dropped for an empty extraction, as in the legacy
+  # run, so featureCounts reports native zeros instead of a paired-input error.
+  empty_input_dropped = c("-p", "-C", "-B"),
+  max_site_distance = 50L)
+
+# Model 1 gates for the ratio outcome. A sample enters the model only with at
+# least min_exon_reads exon-bin reads; the junction support gates do not apply.
+variant_ratio_gates <- function(min_exon_reads = 10L, ...) {
+  g <- variant_association_gates(...)
+  g$min_exon_reads <- as.integer(min_exon_reads)
+  g[c("min_samples", "min_exon_reads", "min_mac", "min_group_samples", "min_groups",
+      "perfect_fit_rel_tol", "p_display_floor")]
+}
+
+variant_empty_ratio_sites <- function() data.frame(site_id = character(), chrom = character(),
+  splice_site_position = integer(), strand = character(), splice_site_type = character(),
+  intron_start1 = integer(), intron_end1 = integer(), exon_start1 = integer(), exon_end1 = integer(),
+  source = character(), stringsAsFactors = FALSE)
+
+# b is the intronic base adjacent to the splice site: the intron start for a
+# plus-strand donor or minus-strand acceptor, otherwise the intron end.
+variant_ratio_sites <- function(chrom, position, strand, type, source = "manual") {
+  n <- length(position)
+  if (!n) return(variant_empty_ratio_sites())
+  if (!all(lengths(list(chrom, strand, type, source)) %in% c(1L, n)))
+    stop("Splice-site fields must have matching lengths.")
+  chrom <- rep_len(as.character(chrom), n); strand <- rep_len(as.character(strand), n)
+  type <- rep_len(as.character(type), n); source <- rep_len(as.character(source), n)
+  position <- suppressWarnings(as.numeric(position))
+  if (anyNA(position) || any(position != floor(position)) || any(position < 1))
+    stop("A splice-site position must be a positive whole number.")
+  if (!all(strand %in% c("+", "-"))) stop("Splice-site strand must be + or -.")
+  if (!all(type %in% c("donor", "acceptor"))) stop("Splice-site type must be donor or acceptor.")
+  if (any(!grepl("^[A-Za-z0-9_.-]+$", chrom))) stop("Use an exact, literal chromosome name.")
+  w <- variant_ratio_parameters()$bin_width
+  forward <- (type == "donor") == (strand == "+")
+  out <- data.frame(site_id = paste(type, strand, chrom, as.integer(position), sep = ":"), chrom = chrom,
+    splice_site_position = as.integer(position), strand = strand, splice_site_type = type,
+    intron_start1 = as.integer(ifelse(forward, position, position - w + 1)),
+    intron_end1 = as.integer(ifelse(forward, position + w - 1, position)),
+    exon_start1 = as.integer(ifelse(forward, position - w, position + 1)),
+    exon_end1 = as.integer(ifelse(forward, position - 1, position + w)),
+    source = source, stringsAsFactors = FALSE)
+  if (any(out$exon_start1 < 1 | out$intron_start1 < 1)) stop("A ratio bin starts before the chromosome start.")
+  out[!duplicated(out$site_id), , drop = FALSE]
+}
+
+# Parse "donor:+:36994347" (chromosome taken from the variant record).
+variant_parse_ratio_site <- function(text, chrom) {
+  parts <- strsplit(trimws(text), ":", fixed = TRUE)[[1L]]
+  if (length(parts) != 3L) stop("Write a splice site as type:strand:position, for example donor:+:36994347.")
+  variant_ratio_sites(chrom, parts[[3L]], parts[[2L]], tolower(parts[[1L]]), source = "manual")
+}
+
+# Candidate sites from annotated introns (query_annotation()$introns): every
+# distinct donor/acceptor boundary within max_distance bp of the variant.
+variant_ratio_site_candidates <- function(introns, chrom, pos1,
+                                          max_distance = variant_ratio_parameters()$max_site_distance) {
+  empty <- cbind(variant_empty_ratio_sites(), distance = integer(), transcripts = integer())
+  if (!is.data.frame(introns) || !nrow(introns)) return(empty)
+  if (!all(c("transcript_id", "chrom", "strand", "donor1", "acceptor1") %in% names(introns)))
+    stop("Annotated introns lack donor/acceptor coordinates.")
+  introns <- introns[introns$chrom == chrom & introns$strand %in% c("+", "-"), , drop = FALSE]
+  sites <- rbind(
+    data.frame(position = introns$donor1, strand = introns$strand, type = "donor", transcript_id = introns$transcript_id),
+    data.frame(position = introns$acceptor1, strand = introns$strand, type = "acceptor", transcript_id = introns$transcript_id))
+  sites <- sites[is.finite(sites$position) & abs(sites$position - pos1) <= max_distance, , drop = FALSE]
+  if (!nrow(sites)) return(empty)
+  key <- paste(sites$type, sites$strand, sites$position)
+  transcripts <- tapply(sites$transcript_id, key, function(x) length(unique(x)))
+  sites <- sites[!duplicated(key), , drop = FALSE]
+  out <- variant_ratio_sites(chrom, sites$position, sites$strand, sites$type, source = "GENCODE")
+  out$distance <- as.integer(abs(out$splice_site_position - pos1))
+  out$transcripts <- as.integer(transcripts[paste(out$splice_site_type, out$strand, out$splice_site_position)])
+  out[order(out$distance, out$splice_site_type, out$strand, out$splice_site_position), , drop = FALSE]
+}
+
+# Count one BAM for the frozen sites. Returns one row per site; any native
+# failure stops this sample (it is then recorded as FAILED, never as zero).
+variant_ratio_counts <- function(bam, sites, work = tempfile("regshiny_ratio_")) {
+  params <- variant_ratio_parameters()
+  tools <- Sys.which(c("samtools", "featureCounts"))
+  if (any(!nzchar(tools))) stop("Missing executables for the splice-site ratio: ",
+                                paste(names(tools)[!nzchar(tools)], collapse = ", "))
+  if (!dir.exists(work)) dir.create(work, mode = "0700")
+  on.exit(unlink(work, recursive = TRUE), add = TRUE)
+  run <- function(tool, args) {
+    p <- processx::run(unname(tools[[tool]]), as.character(args), stderr = "|", timeout = 600,
+                       error_on_status = FALSE, cleanup_tree = TRUE)
+    if (isTRUE(p$timeout) || is.na(p$status) || p$status != 0L)
+      stop(tool, " failed for the splice-site ratio: ", p$stderr, call. = FALSE)
+    p$stdout
+  }
+  bed <- file.path(work, "ratio_windows.bed")
+  writeLines(paste(sites$chrom, pmin(sites$intron_start1, sites$exon_start1) - 1L,
+                   pmax(sites$intron_end1, sites$exon_end1), sep = "\t"), bed)
+  subset <- file.path(work, "ratio.bam")
+  run("samtools", c("view", "-bh", "-M", "-L", bed, params$extraction_flags, "-o", subset, bam))
+  empty <- identical(trimws(run("samtools", c("view", "-c", subset))), "0")
+  options <- params$featurecounts_options
+  if (empty) options <- options[!options %in% params$empty_input_dropped]
+  counts <- list()
+  for (type in c("intron", "exon")) {
+    gtf <- file.path(work, paste0(type, ".gtf"))
+    writeLines(paste(sites$chrom, paste0(type, "_bin"), type, sites[[paste0(type, "_start1")]],
+      sites[[paste0(type, "_end1")]], ".", sites$strand, ".", sprintf('gene_id "%s"', sites$site_id), sep = "\t"), gtf)
+    out <- file.path(work, paste0(type, ".counts.tsv"))
+    run("featureCounts", c("-a", gtf, "-o", out, "-t", type, options, "--tmpDir", work, subset))
+    fc <- utils::read.delim(out, comment.char = "#", check.names = FALSE, stringsAsFactors = FALSE)
+    m <- match(sites$site_id, fc$Geneid)
+    if (anyNA(m)) stop("featureCounts output lacks a requested splice site.")
+    counts[[type]] <- as.numeric(fc[[ncol(fc)]][m])
+  }
+  data.frame(site_id = sites$site_id, intron_count = counts$intron, exon_count = counts$exon,
+             empty_extraction = empty, stringsAsFactors = FALSE)
+}
+
+variant_ratio_tool_versions <- function() {
+  version <- function(tool, args) {
+    path <- Sys.which(tool)
+    if (!nzchar(path)) return(NA_character_)
+    p <- processx::run(unname(path), args, error_on_status = FALSE, timeout = 20)
+    lines <- trimws(strsplit(paste(p$stdout, p$stderr, sep = "\n"), "\n", fixed = TRUE)[[1L]])
+    lines <- lines[nzchar(lines)]
+    if (length(lines)) lines[[1L]] else NA_character_
+  }
+  list(samtools = version("samtools", "--version"), featureCounts = version("featureCounts", "-v"))
+}
+
+# The frozen site table in cfg$ratio_sites is rebuilt from its defining fields,
+# so stored bins cannot drift from the documented geometry.
+variant_check_ratio_sites <- function(sites, chrom) {
+  if (is.null(sites)) return(variant_empty_ratio_sites())
+  if (!is.data.frame(sites) || !all(c("chrom", "splice_site_position", "strand", "splice_site_type", "source") %in% names(sites)))
+    stop("The splice-site ratio sites are malformed.")
+  if (!nrow(sites)) return(variant_empty_ratio_sites())
+  if (any(sites$chrom != chrom)) stop("Splice-site ratio sites must be on the variant chromosome.")
+  rebuilt <- variant_ratio_sites(sites$chrom, sites$splice_site_position, sites$strand, sites$splice_site_type, sites$source)
+  if (nrow(rebuilt) != nrow(sites)) stop("Duplicate splice-site ratio sites.")
+  rebuilt
+}
+
+# Per-sample legacy encoding: exon > 0 gives 1 - intron/exon (negative values
+# kept); both zero gives 0; exon zero with intron reads gives NA.
+variant_ratio_legacy_value <- function(intron, exon)
+  ifelse(exon > 0, 1 - intron / exon, ifelse(intron == 0, 0, NA_real_))
+
+variant_empty_ratio_association <- function() data.frame(site_id = character(), chrom = character(),
+  splice_site_position = integer(), strand = character(), splice_site_type = character(),
+  n_successful = integer(), ratio_mean_legacy_dosage0 = numeric(), ratio_mean_legacy_dosage1 = numeric(),
+  ratio_mean_legacy_dosage2 = numeric(), n_both_zero = integer(), n_exon_zero_intron_positive = integer(),
+  n_below_min_exon = integer(), n = integer(), n_dosage0 = integer(), n_dosage1 = integer(),
+  n_dosage2 = integer(), mac = integer(), mean_exon_count_dosage0 = numeric(),
+  mean_exon_count_dosage1 = numeric(), mean_exon_count_dosage2 = numeric(), mean_ratio_dosage0 = numeric(),
+  mean_ratio_dosage1 = numeric(), mean_ratio_dosage2 = numeric(), beta = numeric(), se = numeric(),
+  t_value = numeric(), p_value = numeric(), log10_p_value = numeric(), q_value_bh = numeric(),
+  p_genotype_3level = numeric(), status = character(), stringsAsFactors = FALSE)
+
+# Model 1 for the legacy ratio: OLS of ratio ~ additive ALT dosage per site,
+# over successful samples with a biallelic diploid dosage and exon_count >=
+# min_exon_reads. ratio_mean_legacy_* reproduce the legacy summary (all
+# successful samples, both-zero coded 0, NA excluded) and are descriptive only.
+variant_ratio_association <- function(result, gates = variant_ratio_gates()) {
+  if (is.null(result$ratio_sites) || is.null(result$ratio_counts))
+    stop("This saved result predates the splice-site ratio; rerun the variant with a selected splice site.")
+  sites <- result$ratio_sites; rc <- result$ratio_counts
+  s <- result$samples
+  n_alt <- length(strsplit(as.character(result$variant$alt[[1L]]), ",", fixed = TRUE)[[1L]])
+  s <- s[s$status == "SUCCESS", c("vcf_sample", "genotype"), drop = FALSE]
+  s$dosage <- variant_genotype_dosage(s$genotype, n_alt)
+  s <- s[is.finite(s$dosage), , drop = FALSE]
+  finish <- function(out) { attr(out, "gates") <- gates; out }
+  if (!nrow(sites)) return(finish(variant_empty_ratio_association()))
+  group_mean <- function(v, x, d) if (any(x == d)) mean(v[x == d]) else NA_real_
+  rows <- lapply(seq_len(nrow(sites)), function(i) {
+    site <- sites[i, , drop = FALSE]
+    r <- rc[rc$site_id == site$site_id, , drop = FALSE]
+    m <- match(s$vcf_sample, r$vcf_sample)
+    if (anyNA(m)) stop("Splice-site ratio counts are missing for a successful sample.")
+    intron <- r$intron_count[m]; exon <- r$exon_count[m]
+    legacy <- variant_ratio_legacy_value(intron, exon)
+    legacy_mean <- function(d) { v <- legacy[s$dosage == d & !is.na(legacy)]; if (length(v)) mean(v) else NA_real_ }
+    keep <- exon >= gates$min_exon_reads
+    x <- s$dosage[keep]; y <- 1 - intron[keep] / exon[keep]; n <- length(x)
+    mac <- as.integer(min(sum(x), 2 * n - sum(x)))
+    large_groups <- sum(vapply(c(0, 1, 2), function(d) sum(x == d) >= gates$min_group_samples, logical(1)))
+    status <- if (n < gates$min_samples) "TOO_FEW_SAMPLES" else
+      if (length(unique(x)) < 2L) "SINGLE_DOSAGE" else
+      if (mac < gates$min_mac || large_groups < gates$min_groups) "LOW_MAC" else
+      if (length(unique(y)) < 2L) "CONSTANT_OUTCOME" else "OK"
+    fit <- list(beta = NA_real_, se = NA_real_, t_value = NA_real_, p_value = NA_real_, log10_p_value = NA_real_)
+    p3 <- NA_real_
+    if (status == "OK") {
+      fit <- variant_fit_dosage(x, y, gates); status <- fit$status
+      if (status == "OK") {
+        # Sensitivity: genotype as a factor (F test, levels - 1 df), not in the BH family.
+        p3 <- stats::anova(stats::lm(y ~ factor(x)))[["Pr(>F)"]][[1L]]
+      }
+    }
+    data.frame(site_id = site$site_id, chrom = site$chrom, splice_site_position = site$splice_site_position,
+      strand = site$strand, splice_site_type = site$splice_site_type, n_successful = nrow(s),
+      ratio_mean_legacy_dosage0 = legacy_mean(0), ratio_mean_legacy_dosage1 = legacy_mean(1),
+      ratio_mean_legacy_dosage2 = legacy_mean(2),
+      n_both_zero = sum(intron == 0 & exon == 0), n_exon_zero_intron_positive = sum(exon == 0 & intron > 0),
+      n_below_min_exon = sum(!keep), n = n, n_dosage0 = sum(x == 0), n_dosage1 = sum(x == 1),
+      n_dosage2 = sum(x == 2), mac = mac,
+      mean_exon_count_dosage0 = group_mean(exon[keep], x, 0), mean_exon_count_dosage1 = group_mean(exon[keep], x, 1),
+      mean_exon_count_dosage2 = group_mean(exon[keep], x, 2),
+      mean_ratio_dosage0 = group_mean(y, x, 0), mean_ratio_dosage1 = group_mean(y, x, 1),
+      mean_ratio_dosage2 = group_mean(y, x, 2),
+      beta = fit$beta, se = fit$se, t_value = fit$t_value, p_value = fit$p_value,
+      log10_p_value = fit$log10_p_value, q_value_bh = NA_real_, p_genotype_3level = p3,
+      status = status, stringsAsFactors = FALSE)
+  })
+  out <- do.call(rbind, rows)
+  tested <- out$status == "OK"
+  out$q_value_bh[tested] <- stats::p.adjust(out$p_value[tested], method = "BH")
   rownames(out) <- NULL
   finish(out)
 }
@@ -430,9 +671,16 @@ variant_aggregate <- function(variant, genotypes, samples, sample_results, cfg, 
   sample_junctions <- variant_bind_sample_junctions(lapply(which(success), function(i)
     variant_sample_junction_rows(samples$vcf_sample[[i]], samples$genotype[[i]], sample_results[[i]]$junctions)))
   variant_check_sample_junctions(sample_junctions, junctions)
+  ratio_sites <- variant_check_ratio_sites(cfg$ratio_sites, cfg$chrom)
+  ratio_counts <- if (nrow(ratio_sites)) variant_bind_ratio_counts(lapply(which(success), function(i) {
+    r <- sample_results[[i]]$ratio_counts
+    if (!is.data.frame(r) || !identical(r$site_id, ratio_sites$site_id)) stop("Splice-site ratio counts are missing for a successful sample.")
+    data.frame(vcf_sample = samples$vcf_sample[[i]], genotype = samples$genotype[[i]],
+               r[, c("site_id", "intron_count", "exon_count", "empty_extraction")], stringsAsFactors = FALSE)
+  })) else variant_bind_ratio_counts(list())
   list(group_summary = do.call(rbind, summary), depth = do.call(rbind, depths),
        junctions = junctions, sample_junctions = sample_junctions,
-       rna_bases = do.call(rbind, bases))
+       rna_bases = do.call(rbind, bases), ratio_sites = ratio_sites, ratio_counts = ratio_counts)
 }
 
 analyze_variant_preview <- function(resources, variant, cfg, max_per_group = 3L) {
@@ -444,6 +692,7 @@ analyze_variant_preview <- function(resources, variant, cfg, max_per_group = 3L)
   cfg <- validate_config(cfg)
   if (cfg$demo || cfg$chrom != variant$chrom || variant$pos1 < cfg$start1 || variant$pos1 > cfg$end1)
     stop("The real RNA interval must contain the selected variant on exactly the same chromosome.")
+  cfg$ratio_sites <- variant_check_ratio_sites(cfg$ratio_sites, cfg$chrom)
   current <- lookup_variants(resources, paste0(variant$chrom, ":", variant$pos1))
   current <- current[current$record_id == variant$record_id, , drop = FALSE]
   if (nrow(current) != 1L || !identical(as.character(current$vcf), as.character(variant$vcf)) ||
@@ -481,7 +730,9 @@ analyze_variant_preview <- function(resources, variant, cfg, max_per_group = 3L)
       if (is.na(m)) stop("The BAM has no exact matching chromosome name.")
       if (!is.na(info$contig_length) && contigs$length_bp[[m]] != info$contig_length)
         stop("VCF and BAM contig lengths differ; reference assembly compatibility failed.")
-      analyze_bam(sample_cfg)
+      r <- analyze_bam(sample_cfg)
+      if (nrow(cfg$ratio_sites)) r$ratio_counts <- variant_ratio_counts(sample_cfg$bam, cfg$ratio_sites)
+      r
     }, error = function(e) e)
     if (inherits(result, "error")) {
       selected$error[[i]] <- conditionMessage(result)
@@ -515,6 +766,8 @@ analyze_variant_preview <- function(resources, variant, cfg, max_per_group = 3L)
     rna_evidence_status = if (rna_supported) "SNV_BASE_COUNTS" else "UNSUPPORTED_NON_SNV",
     count_unit = "retained primary alignment record; paired ends separate",
     aggregate_definition = "Unweighted mean across successful selected BAMs, including observed zeros; failed samples excluded and counted.",
+    ratio = list(sites = cfg$ratio_sites, parameters = variant_ratio_parameters(),
+                 versions = if (nrow(cfg$ratio_sites)) variant_ratio_tool_versions() else NULL),
     bcftools_version = version$text, config = cfg,
     completed_at = format(Sys.time(), tz = "UTC", usetz = TRUE), log = c(info$log, logs)))
   c(list(variant = variant, genotypes = calls, samples = selected, sample_results = results,
@@ -581,6 +834,8 @@ variant_stream_init <- function(calls, cfg, rna_supported) {
   s$junctions <- data.frame(key = character(), chrom = character(), intron_start1 = integer(),
                            intron_end1 = integer(), strand = character(), stringsAsFactors = FALSE)
   s$sample_junctions <- list()
+  s$ratio_sites <- variant_check_ratio_sites(cfg$ratio_sites, cfg$chrom)
+  s$ratio_counts <- list()
   s
 }
 
@@ -602,6 +857,14 @@ variant_stream_add <- function(stream, genotype, contribution, sample) {
       j[new_global, c("key", "chrom", "intron_start1", "intron_end1", "strand"), drop = FALSE])
     stream$sample_junctions[[length(stream$sample_junctions) + 1L]] <-
       variant_sample_junction_rows(sample, genotype, j)
+  }
+  if (nrow(stream$ratio_sites)) {
+    r <- contribution$ratio_counts
+    if (!is.data.frame(r) || !identical(r$site_id, stream$ratio_sites$site_id) ||
+        anyNA(r$intron_count) || anyNA(r$exon_count) || any(r$intron_count < 0) || any(r$exon_count < 0))
+      stop("Invalid checkpoint splice-site ratio counts.")
+    stream$ratio_counts[[length(stream$ratio_counts) + 1L]] <- data.frame(vcf_sample = sample, genotype = genotype,
+      r[, c("site_id", "intron_count", "exon_count", "empty_extraction")], stringsAsFactors = FALSE)
   }
   if (stream$rna_supported) {
     b <- contribution$audit$rna_bases; e <- attr(b, "excluded")
@@ -659,10 +922,17 @@ variant_stream_finish <- function(stream, calls, samples) {
   variant_check_sample_junctions(sample_junctions, junctions)
   list(group_summary = do.call(rbind, summary), depth = do.call(rbind, depths),
        junctions = junctions, sample_junctions = sample_junctions,
-       rna_bases = do.call(rbind, bases))
+       rna_bases = do.call(rbind, bases), ratio_sites = stream$ratio_sites,
+       ratio_counts = variant_bind_ratio_counts(stream$ratio_counts))
 }
 
-variant_compact_contribution <- function(result, source_state) {
+variant_bind_ratio_counts <- function(parts) {
+  if (length(parts)) return(do.call(rbind, parts))
+  data.frame(vcf_sample = character(), genotype = character(), site_id = character(), intron_count = numeric(),
+             exon_count = numeric(), empty_extraction = logical(), stringsAsFactors = FALSE)
+}
+
+variant_compact_contribution <- function(result, source_state, ratio_counts = NULL) {
   if (!isTRUE(result$native_audit_passed)) stop("Native junction/CIGAR audit did not pass.")
   audit_fields <- c("config", "candidate_alignments", "span_only_excluded", "native_audit_passed",
                     "versions", "source_metadata", "completed_at", "rna_bases", "warnings")
@@ -673,7 +943,8 @@ variant_compact_contribution <- function(result, source_state) {
   audit$mean_depth <- mean(result$depth$depth)
   list(status = "SUCCESS", error = NA_character_, source_state = source_state, audit = audit,
        depth = as.numeric(result$depth$depth),
-       junctions = result$junctions[, c("key", "chrom", "intron_start1", "intron_end1", "strand", "score"), drop = FALSE])
+       junctions = result$junctions[, c("key", "chrom", "intron_start1", "intron_end1", "strand", "score"), drop = FALSE],
+       ratio_counts = ratio_counts)
 }
 
 analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
@@ -698,6 +969,7 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
   cfg <- validate_config(cfg)
   if (cfg$demo || cfg$chrom != variant$chrom || variant$pos1 < cfg$start1 || variant$pos1 > cfg$end1)
     stop("The real RNA interval must contain the selected variant on exactly the same chromosome.")
+  cfg$ratio_sites <- variant_check_ratio_sites(cfg$ratio_sites, cfg$chrom)
   current <- lookup_variants(resources, paste0(variant$chrom, ":", variant$pos1))
   current <- current[current$record_id == variant$record_id, , drop = FALSE]
   if (nrow(current) != 1L || !identical(as.character(current$vcf), as.character(variant$vcf)) ||
@@ -724,7 +996,9 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
   progress$group_summary$completed <- progress$group_summary$success <- progress$group_summary$failed <- 0L
   publish_progress()
   version <- variant_run("--version")
-  executables <- unname(Sys.which(c("bcftools", "samtools", "regtools")))
+  executables <- unname(Sys.which(c("bcftools", "samtools", "regtools", if (nrow(cfg$ratio_sites)) "featureCounts")))
+  if (nrow(cfg$ratio_sites) && !nzchar(Sys.which("featureCounts")))
+    stop("featureCounts (subread/2.0.3) is required for the splice-site ratio; load the module or submit without a ratio site.")
   bam_states <- lapply(selected$bam, variant_bam_state)
   binding <- list(schema = "regshiny_full_cohort_v1", code = variant_code_identity(),
     variant = as.list(variant[1L, c("record_id", "chrom", "pos1", "ref", "alt", "build", "vcf")]),
@@ -787,7 +1061,8 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
         if (!is.na(info$contig_length) && contigs$length_bp[[m]] != info$contig_length)
           stop("VCF and BAM contig lengths differ; reference assembly compatibility failed.")
         full_result <- analyze_bam(sample_cfg)
-        variant_compact_contribution(full_result, source_state)
+        ratio <- if (nrow(cfg$ratio_sites)) variant_ratio_counts(sample_cfg$bam, cfg$ratio_sites) else NULL
+        variant_compact_contribution(full_result, source_state, ratio)
       }, error = function(e) list(status = "FAILED", error = conditionMessage(e),
                                   source_state = source_state, audit = NULL, depth = NULL, junctions = NULL))
       if (!identical(source_state, variant_bam_state(sample_cfg$bam)))
@@ -856,6 +1131,8 @@ analyze_variant_all <- function(resources, variant, cfg, progress_file = NULL,
     rna_evidence_status = if (rna_supported) "SNV_BASE_COUNTS" else "UNSUPPORTED_NON_SNV",
     count_unit = "retained primary alignment record; paired ends separate",
     aggregate_definition = "Unweighted mean across all successfully analyzed linked called-genotype BAMs, including observed zeros; failures excluded and counted.",
+    ratio = list(sites = cfg$ratio_sites, parameters = variant_ratio_parameters(),
+                 versions = if (nrow(cfg$ratio_sites)) variant_ratio_tool_versions() else NULL),
     bcftools_version = version$text, config = cfg,
     completed_at = format(Sys.time(), tz = "UTC", usetz = TRUE), log = c(info$log, attr(calls, "log"))))
   result <- c(list(variant = variant, genotypes = calls, samples = selected, sample_results = audits,

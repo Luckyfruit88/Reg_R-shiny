@@ -83,6 +83,24 @@ Columns: `n` and `n_dosage0/1/2` count analysed samples; `mac`, `n_nonzero` and 
 
 The model is unadjusted: no age, sex, RNA batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. In preview mode the test describes only the capped subset. Results saved before `sample_junctions` existed must be rerun.
 
+## Splice-site ratio (legacy definition)
+
+This reproduces the ratio of the FHS legacy splice-site method (re-implemented 2026-10-07; its historical original execution is not verified). It is measured at one splice site per result, chosen before the job runs and frozen with it.
+
+**Site.** A site is `type:strand:position`, where position `b` is the intronic base next to the splice site: the intron start for a plus-strand donor or a minus-strand acceptor, otherwise the intron end. GENCODE v48 introns supply candidates within 50 bp of the variant (`donor1`/`acceptor1`). With exactly one candidate it is preselected (interactive) or used (batch); with several, the user must choose, and a batch line without `site=` is not submitted. A site can always be entered manually, for example a GENCODE v50 site from the legacy worksheet. `site=none` submits without a ratio.
+
+**Bins.** For a plus-strand donor or minus-strand acceptor, the intron bin is `[b, b+24]` and the exon bin `[b−25, b−1]`; otherwise the intron bin is `[b−24, b]` and the exon bin `[b+1, b+25]`.
+
+**Counting.** Per sample, `samtools view -bh -M -L <site windows> -F 268 -f 1 -f 2 -q 5` (mapped, mate mapped, proper pair, primary, MAPQ ≥ 5) extracts the two-bin window, and `featureCounts -t intron|exon -p -O -f -s 2 -C -B --primary -T 1` counts each bin. The unit is reads, not fragments (no `--countReadPairs`); counting is reverse-stranded. For an empty extraction `-p -C -B` are dropped, as in the legacy run, so featureCounts reports native zeros. These filters are fixed and independent of the interactive read filters. featureCounts comes from `subread/2.0.3`. A featureCounts or extraction failure fails that sample; it is never recorded as zero.
+
+**Per-sample value.** `ratio = 1 − intron_count / exon_count` when `exon_count > 0` (negative values are kept); 0 when both counts are 0 (legacy encoding); NA when `exon_count = 0` and `intron_count > 0`.
+
+**Model 1 (ratio).** OLS of `ratio ~ dosage` over successful samples with a biallelic diploid ALT dosage and `exon_count ≥ 10`; samples below 10 exon-bin reads (including both-zero samples) are excluded from the model and counted. The denominator gate of the junction model does not apply. Statuses, in order: `TOO_FEW_SAMPLES` (< 3 analysed), `SINGLE_DOSAGE`, `LOW_MAC` (mac < 5 or fewer than 2 dosage groups with ≥ 5 analysed samples), `CONSTANT_OUTCOME`, `PERFECT_FIT` (RSS ≤ 1e-10 × TSS), `OK`. Only `OK` rows get se, t, p and q. `q_value_bh` adjusts the `OK` ratio rows of one result, separately from the junction table. `p_genotype_3level` is a sensitivity F test with genotype as a factor (levels − 1 df), outside the BH family.
+
+**Columns.** `ratio_mean_legacy_dosage0/1/2` reproduce the legacy summary (all successful samples with a usable dosage; both-zero coded 0; NA excluded) and are descriptive only. `n_successful`, `n_both_zero`, `n_exon_zero_intron_positive` and `n_below_min_exon` account for every successful sample. `n`, `n_dosage0/1/2` and `mac` describe the analysed samples; `mean_exon_count_dosage0/1/2` and `mean_ratio_dosage0/1/2` are their unweighted means. `beta` is the change in ratio per ALT allele. The model is unadjusted and p-values are nominal, as for the junction model.
+
+**Verification.** On SCC, the counts of this implementation (samtools 1.23) were compared with the literal legacy commands (samtools 1.22, featureCounts 2.0.3) for 60 samples (15 per batch) at 9 legacy sites covering every type/strand combination: all 540 intron and exon counts were identical. Extracting one site's own window gives the same counts as the legacy extraction over all 497 sites.
+
 ## GENCODE v48 overlay semantics
 
 GENCODE features use 1-based inclusive coordinates, matching the application's displayed genomic coordinates. For adjacent exons [a,b] and [c,d] of the same complete transcript, the skipped intron is [b+1,c-1]. Negative-strand transcript direction changes donor/acceptor labelling, not the genomic bounds. Introns are derived before any display clipping. Exon numbers must be consecutive in transcript 5′→3′ order and the complete exon model must span the declared transcript; incomplete models cannot create a false annotation match.

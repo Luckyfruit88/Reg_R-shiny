@@ -391,5 +391,64 @@ shiny::testServer(variant_server, args = review_args, {
   session$setInputs(batch_confirm = 1)
   stopifnot(is.null(isolate(batch_review())), batch_memory$counter == before)
 })
+# Legacy splice-site ratio: batch site= parsing, site resolution rules, and the
+# ratio panel for a result that carries ratio counts.
+shiny::testServer(variant_server, args = review_args, {
+  review_enabled(TRUE)
+  session$setInputs(flank = 50, mapq = 20, baseq = 0, anchor = 8,
+    min_intron = 70, max_intron = 500000, strand_mode = "XS", exclude_dup = FALSE, nh1 = FALSE,
+    sampling_mode = "all", batch_queries = "chr1:200 site=donor:+:150\nchr1:100:A:T SITE=none\nchr1:300")
+  session$setInputs(batch_submit = 1)
+  lines <- isolate(batch_review())$lines
+  stopifnot(identical(lines$query, c("chr1:200", "chr1:100:A:T", "chr1:300")),
+            identical(lines$site_spec, c("donor:+:150", "none", NA_character_)))
+})
+ratio_api <- new.env(parent = globalenv())
+sys.source(backend_file, envir = ratio_api); sys.source(normalizePath("src/variant_backend.R"), envir = ratio_api)
+v <- data.frame(chrom = "chr1", pos1 = 1010L)
+introns <- data.frame(transcript_id = c("T1", "T2"), chrom = "chr1", strand = c("+", "-"),
+  intron_start1 = c(1000, 1030), intron_end1 = c(2000, 3000), donor1 = c(1000, 3000), acceptor1 = c(2000, 1030))
+one <- function(v) ratio_api$variant_ratio_site_candidates(introns[1, ], "chr1", v$pos1)
+two <- function(v) ratio_api$variant_ratio_site_candidates(introns, "chr1", v$pos1)
+none <- function(v) ratio_api$variant_ratio_site_candidates(introns[0, ], "chr1", v$pos1)
+stopifnot(nrow(variant_batch_ratio_site(ratio_api, v, "none", two)$sites) == 0L,
+  variant_batch_ratio_site(ratio_api, v, "acceptor:-:1030", two)$sites$site_id == "acceptor:-:chr1:1030",
+  variant_batch_ratio_site(ratio_api, v, NA_character_, one)$sites$site_id == "donor:+:chr1:1000",
+  nrow(variant_batch_ratio_site(ratio_api, v, NA_character_, none)$sites) == 0L,
+  grepl("GENCODE unavailable", variant_batch_ratio_site(ratio_api, v, NA_character_, NULL)$label, fixed = TRUE))
+ambiguous <- tryCatch(variant_batch_ratio_site(ratio_api, v, NA_character_, two), error = function(e) conditionMessage(e))
+stopifnot(grepl("2 annotated splice sites within 50 bp (donor:+:1000; acceptor:-:1030)", ambiguous, fixed = TRUE),
+          grepl("site=none", ambiguous, fixed = TRUE))
+ratio_fixture_file <- tempfile("regshiny-ratio-fixture-", fileext = ".R")
+writeLines(c(readLines(fixture_file),
+  'base_analyze <- analyze_variant',
+  'analyze_variant <- function(resources, variant, cfg, max_per_group = 3L, sampling_mode = "all") {',
+  '  r <- base_analyze(resources, variant, cfg, max_per_group, sampling_mode)',
+  '  r$ratio_sites <- data.frame(site_id = "donor:+:chr1:150", chrom = "chr1", splice_site_position = 150L, strand = "+",',
+  '    splice_site_type = "donor", intron_start1 = 150L, intron_end1 = 174L, exon_start1 = 125L, exon_end1 = 149L, source = "manual")',
+  '  r$ratio_counts <- data.frame(vcf_sample = "s1", genotype = "0/1", site_id = "donor:+:chr1:150", intron_count = 2, exon_count = 20, empty_extraction = FALSE)',
+  '  r',
+  '}'), ratio_fixture_file)
+ratio_backend <- new.env(parent = globalenv())
+sys.source(backend_file, envir = ratio_backend); sys.source(normalizePath("src/variant_backend.R"), envir = ratio_backend)
+shiny::testServer(variant_server,
+  args = list(backend = ratio_backend, resources = list(build = "SYNTHETIC", vcf_registry = data.frame(chrom = "chr1"), samples = data.frame(vcf_sample = "s1")),
+    backend_file = backend_file, variant_file = ratio_fixture_file, splice_file = splice_file), {
+    session$setInputs(query = "chr1:200", record = "", sampling_mode = "preview", flank = 50, sample_cap = 3,
+      mapq = 20, baseq = 0, anchor = 8, min_intron = 70, max_intron = 500000,
+      strand_mode = "XS", exclude_dup = FALSE, nh1 = FALSE, lookup = 1)
+    await_task(lookup_task, session)
+    session$setInputs(record = "1", ratio_site = "manual", ratio_site_manual = "donor:+:150", run = 1)
+    await_task(analysis_task, session)
+    stopifnot(isolate(analysis_task$status()) == "success")
+    a <- isolate(ratio_association())
+    stopifnot(nrow(a) == 1L, a$status == "TOO_FEW_SAMPLES", a$ratio_mean_legacy_dosage1 == 0.9)
+    stopifnot(grepl("donor:+:chr1:150", html_text(output$ratio_status), fixed = TRUE),
+              grepl("TOO_FEW_SAMPLES", html_text(output$ratio_status), fixed = TRUE),
+              grepl("ratio = 1 − intron_count / exon_count", html_text(output$ratio_legend), fixed = TRUE),
+              grepl("featureCounts -p -O -f -s 2 -C -B --primary -T 1", html_text(output$ratio_legend), fixed = TRUE),
+              grepl("GENCODE annotation is unavailable", html_text(output$ratio_site_ui), fixed = TRUE))
+  })
+unlink(ratio_fixture_file)
 unlink(c(fixture_file, job_fixture_file, batch_variant_file))
 cat("VARIANT_UI_STATE_TESTS_OK\n")

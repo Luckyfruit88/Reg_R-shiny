@@ -7,7 +7,7 @@ Run checks from the repository root. Synthetic fixtures are not biological resul
 In SCC RStudio select R 4.5.2. The shared packages and native tool modules are used by both the launcher and the Run App button. A quick Terminal check is:
 
 ```bash
-module load R/4.5.2 samtools/1.23 regtools/1.0.0 bcftools/1.23
+module load R/4.5.2 samtools/1.23 regtools/1.0.0 bcftools/1.23 subread/2.0.3
 Rscript scripts/check_access.R
 ```
 
@@ -25,7 +25,7 @@ Rscript tests/run_tests.R --unit --require-clean   # as run in CI: worktree must
 
 Use `--require-clean` from a clean checkout for release acceptance. Without it, local changes are allowed and only reported as unaltered. A git query that fails is reported as unverified and fails the run. Full per-suite logs are kept in the ignored `test-artifacts/test-runs/<run>/` directory; the terminal shows a summary and the tail of each failing log.
 
-The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
+The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. The legacy splice-site ratio is covered natively-free by fake `samtools`/`featureCounts` executables that check the literal options and output parsing; its counts were checked on SCC against the literal legacy commands (see [METRICS.md](METRICS.md#splice-site-ratio-legacy-definition)). A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
 
 Generated fixtures stay in temporary directories. Do not run uncontrolled full-cohort analyses on a login node.
 
