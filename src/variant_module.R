@@ -1,15 +1,39 @@
 # Variant-centered interface inside Reg_Shiny. Preview workers share the app's
 # future pool. Full comparisons use persistent SCC jobs and survive disconnects.
 
+# Splice-site bin ratio for one batch line: every GENCODE site within the search
+# distance, unless the line ends with site=none. Bins outside the frozen
+# interval stop this line before submission.
+variant_batch_bin_ratio <- function(api, variant, spec, resolver, cfg, widths) {
+  reject <- function(message) stop(structure(class = c("bin_ratio_rejected", "error", "condition"),
+    list(message = paste(message, "No job submitted for this line."), call = NULL, status = "BIN_RATIO_REJECTED")))
+  if (!is.function(api$variant_bin_ratio_config)) return(list(bin_ratio = NULL, label = "not available in this backend"))
+  if (length(spec) == 1L && !is.na(spec) && nzchar(spec)) {
+    if (!identical(tolower(spec), "none")) reject("Only site=none is accepted; splice sites are taken from GENCODE.")
+    return(list(bin_ratio = NULL, label = "not computed (site=none)"))
+  }
+  if (is.null(widths)) return(list(bin_ratio = NULL, label = "not computed (switched off)"))
+  if (is.null(resolver)) return(list(bin_ratio = NULL, label = "not computed (GENCODE unavailable)"))
+  sites <- resolver(variant, widths)
+  x <- tryCatch(api$variant_bin_ratio_config(sites, cfg, variant$pos1[[1L]], widths$intron_width, widths$exon_width,
+    widths$min_exon_reads, note = if (nrow(sites)) "" else "No GENCODE splice site within the search distance."),
+    error = function(e) reject(conditionMessage(e)))
+  list(bin_ratio = x, label = if (nrow(sites)) paste(nrow(sites), "GENCODE site(s):", paste(sites$site_id, collapse = "; ")) else
+    "no GENCODE splice site within 50 bp")
+}
+
 # Resolve each requested record independently, then issue a separate persistent
 # job submission. This orchestrates metadata work only, never a shared RNA job.
 variant_batch_submit <- function(api, resources, lines, settings, source_identity,
-                                 backend_file, variant_file, job_source, job_root, controls) {
+                                 backend_file, variant_file, job_source, job_root, controls,
+                                 site_resolver = NULL) {
+  widths <- settings$bin_ratio_settings; settings$bin_ratio_settings <- NULL
   outcomes <- list(); submitted_records <- character()
   for (i in seq_len(nrow(lines))) {
     row <- list(input_line = lines$input_line[[i]], query = lines$query[[i]], record_id = NA_character_,
       outcome = "LOOKUP_FAILED", job_id = NA_character_, job_dir = NA_character_, requested_cores = NA_integer_,
-      candidates = "", message = "")
+      candidates = "", bin_ratio = "", message = "")
+    spec <- if ("site_spec" %in% names(lines)) lines$site_spec[[i]] else NA_character_
     records <- tryCatch(api$lookup_variants(resources, row$query), error = function(e) e)
     if (inherits(records, "error")) row$message <- conditionMessage(records) else if (!nrow(records)) {
       row$outcome <- "NOT_FOUND"; row$message <- "No exact VCF record; a reference genotype is not inferred."
@@ -36,6 +60,8 @@ variant_batch_submit <- function(api, resources, lines, settings, source_identit
           if ("contig_length" %in% names(variant) && is.finite(variant$contig_length[[1L]]))
             cfg$end1 <- min(cfg$end1, variant$contig_length[[1L]])
           cfg <- api$validate_config(cfg)
+          ratio <- variant_batch_bin_ratio(api, variant, spec, site_resolver, cfg, widths)
+          cfg$bin_ratio <- ratio$bin_ratio
           if (!is.null(source_identity)) {
             cfg$data_source_id <- source_identity$id; cfg$data_source_label <- source_identity$label
           }
@@ -52,7 +78,7 @@ variant_batch_submit <- function(api, resources, lines, settings, source_identit
           if (length(attempt$job_id) == 1L) row$job_id <- as.character(attempt$job_id)
           if (length(attempt$status) == 1L) row$outcome <- as.character(attempt$status)
         } else {
-          row$outcome <- "SUBMITTED"; row$job_id <- as.character(attempt$job_id)
+          row$outcome <- "SUBMITTED"; row$job_id <- as.character(attempt$job_id); row$bin_ratio <- ratio$label
           row$job_dir <- as.character(attempt$job_dir); row$requested_cores <- 16L
           row$message <- "Independent full-cohort job submitted; inspect its own status and logs."
         }
@@ -94,6 +120,12 @@ variant_ui <- function(id) {
         helpText("Preview only: first sample IDs in sorted order within each called genotype, up to this cap and 30 total. Selection does not depend on RNA outcomes.")),
       conditionalPanel(sprintf("input['%s'] === 'all'", ns("sampling_mode")),
         helpText("All matched BAMs with complete DNA genotype calls are processed. The SCC job and sample checkpoints persist after the browser is closed; open the Jobs tab to see progress or results.")),
+      tags$details(open = NA, tags$summary("Splice-site bin ratio"),
+        checkboxInput(ns("bin_ratio"), "Compute the splice-site bin ratio", TRUE),
+        numericInput(ns("intron_bin"), "Intron bin width (bp)", 25, min = 1, max = 1000),
+        numericInput(ns("exon_bin"), "Exon bin width (bp)", 25, min = 1, max = 1000),
+        numericInput(ns("min_exon_reads"), "Minimum exon-bin reads per sample", 10, min = 1),
+        uiOutput(ns("bin_sites_ui"))),
       tags$details(tags$summary("Read and junction filters"),
         numericInput(ns("mapq"), "Minimum MAPQ", 20, min = 0, max = 255),
         numericInput(ns("baseq"), "Minimum base quality (depth / RNA bases)", 0, min = 0, max = 93),
@@ -149,6 +181,12 @@ variant_ui <- function(id) {
         downloadButton(ns("download_batch"), "Batch outcomes CSV"),
         helpText("Partial failures are retained per input line. Resolve ambiguous alleles before resubmitting only those lines. Inspect an uncertain submission's own receipt before retrying; successful jobs are never rolled back.")),
       bslib::nav_panel("Genotype association",
+        h5("Splice-site bin ratio · 1 − intron reads / exon reads ~ ALT dosage"),
+        uiOutput(ns("bin_ratio_status")),
+        DT::DTOutput(ns("bin_ratio_table")),
+        downloadButton(ns("download_bin_ratio"), "Bin ratio CSV"),
+        uiOutput(ns("bin_ratio_legend")),
+        hr(),
         h5("Model 1 · junction reads per 100 reads ~ additive ALT dosage"),
         uiOutput(ns("association_status")),
         DT::DTOutput(ns("association")),
@@ -270,13 +308,71 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       validate(need(nrow(out) == 1L, "Select exactly one REF / ALT record."))
       out
     })
+    # Splice-site bin ratio: every GENCODE site near the selected record.
+    ratio_supported <- is.function(backend$variant_bin_ratio_candidates)
+    annotation_api <- if (ratio_supported && length(annotation_file) == 1L && file.exists(annotation_file)) {
+      a <- new.env(parent = globalenv()); sys.source(annotation_file, envir = a); a
+    } else NULL
+    bin_widths <- function() {
+      if (!isTRUE(input$bin_ratio)) return(NULL)
+      list(intron_width = backend$int_scalar(input$intron_bin, "Intron bin width", 1, 1000),
+           exon_width = backend$int_scalar(input$exon_bin, "Exon bin width", 1, 1000),
+           min_exon_reads = backend$int_scalar(input$min_exon_reads, "Minimum exon-bin reads", 1, 1e6))
+    }
+    bin_candidates <- reactive({
+      v <- selected_record()
+      w <- tryCatch(bin_widths(), error = function(e) e)
+      tryCatch({
+        if (inherits(w, "error")) stop(conditionMessage(w))
+        if (is.null(annotation_api) || is.null(annotation_resources) || inherits(annotation_resources, "error"))
+          stop("GENCODE annotation is unavailable, so no splice sites can be listed and the bin ratio is not computed.")
+        d <- backend$variant_bin_ratio_defaults()$max_site_distance
+        reach <- d + max(if (is.null(w)) 25L else c(w$intron_width, w$exon_width))
+        q <- annotation_api$query_annotation(annotation_resources, v$chrom[[1L]], max(1, v$pos1[[1L]] - reach),
+                                             v$pos1[[1L]] + reach, build = v$build[[1L]])
+        if (is.null(w)) w <- backend$variant_bin_ratio_defaults()
+        backend$variant_bin_ratio_candidates(q, v$chrom[[1L]], v$pos1[[1L]], w$intron_width, w$exon_width)
+      }, error = function(e) e)
+    })
+    output$bin_sites_ui <- renderUI({
+      req(ratio_supported)
+      if (!isTRUE(input$bin_ratio)) return(helpText("Not computed for new comparisons."))
+      cand <- tryCatch(bin_candidates(), error = function(e) NULL)
+      d <- backend$variant_bin_ratio_defaults()$max_site_distance
+      strand_note <- if (identical(input$strand_mode, "XS"))
+        "XS mode: reads of all strands are counted, because XS tags exist only on spliced reads." else
+        paste0(input$strand_mode, " mode: only reads inferred on the site's strand are counted; unknown strand (?) is excluded.")
+      body <- if (is.null(cand)) "Find and select a variant to list its GENCODE v48 splice sites." else
+        if (inherits(cand, "error")) conditionMessage(cand) else if (!nrow(cand))
+          paste0("No GENCODE v48 splice site within ", d, " bp; the ratio will not be computed.") else {
+          w <- tryCatch(bin_widths(), error = function(e) NULL)
+          check <- if (is.null(w)) rep("", nrow(cand)) else backend$variant_bin_check(cand, w$intron_width, w$exon_width)
+          tags$ul(lapply(seq_len(nrow(cand)), function(i) tags$li(sprintf("%s %s %d · %d bp away%s",
+            cand$splice_site_type[[i]], cand$strand[[i]], cand$splice_site_position[[i]], cand$distance[[i]],
+            if (nzchar(check[[i]]) && check[[i]] != "OK") paste0(" · ", check[[i]]) else ""))))
+        }
+      tagList(helpText(paste0("Every GENCODE v48 donor/acceptor within ", d,
+        " bp is computed, one row per site. Reads are the retained reads used for depth, junctions and the denominator.")),
+        body, helpText(strand_note))
+    })
+    bin_ratio_choice <- function(variant, cfg) {
+      if (!ratio_supported) return(NULL)
+      w <- bin_widths()
+      if (is.null(w)) return(NULL)
+      cand <- bin_candidates()
+      if (inherits(cand, "error")) return(NULL)
+      backend$variant_bin_ratio_config(cand, cfg, variant$pos1[[1L]], w$intron_width, w$exon_width, w$min_exon_reads,
+        note = if (nrow(cand)) "" else "No GENCODE splice site within the search distance.")
+    }
     controls <- reactive(list(query = trimws(input$query), record_id = input$record, lookup_revision = lookup_revision(),
       data_source_id = if (!is.null(source_identity)) source_identity$id else NULL,
       sampling_mode = if (is.null(input$sampling_mode)) "all" else input$sampling_mode,
       flank = input$flank, sample_cap = if (identical(input$sampling_mode, "preview")) input$sample_cap else NULL, mapq = input$mapq,
       baseq = input$baseq, anchor = input$anchor, min_intron = input$min_intron,
       max_intron = input$max_intron, strand_mode = input$strand_mode,
-      exclude_duplicates = input$exclude_dup, nh1_only = input$nh1))
+      exclude_duplicates = input$exclude_dup, nh1_only = input$nh1,
+      bin_ratio = input$bin_ratio, intron_bin = input$intron_bin, exon_bin = input$exon_bin,
+      min_exon_reads = input$min_exon_reads))
     launched_controls <- reactiveVal(NULL)
     launched_config <- reactiveVal(NULL)
     active_mode <- reactiveVal(NULL)
@@ -381,6 +477,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
           min_intron = input$min_intron, max_intron = input$max_intron,
           strand_mode = input$strand_mode, exclude_duplicates = input$exclude_dup, nh1_only = input$nh1)
         cfg <- backend$validate_config(cfg)
+        cfg$bin_ratio <- bin_ratio_choice(variant, cfg)
         if (!is.null(source_identity)) {
           cfg$data_source_id <- source_identity$id
           cfg$data_source_label <- source_identity$label
@@ -413,11 +510,21 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     selected_logs <- reactiveVal(NULL)
     batch_snapshot <- reactiveVal(NULL)
     batch_task <- shiny::ExtendedTask$new(function(res, lines, settings, identity, frozen_controls,
-      source_file, variant_source, jobs_source, root) {
+      source_file, variant_source, jobs_source, root, annotation_res = NULL, annotation_source = NULL) {
       promises::future_promise({
         e <- new.env(parent = globalenv())
         sys.source(source_file, envir = e); sys.source(variant_source, envir = e); sys.source(jobs_source, envir = e)
-        variant_batch_submit(e, res, lines, settings, identity, source_file, variant_source, jobs_source, root, frozen_controls)
+        resolver <- if (length(annotation_source) == 1L && file.exists(annotation_source) &&
+                        !is.null(annotation_res) && !inherits(annotation_res, "error")) {
+          a <- new.env(parent = globalenv()); sys.source(annotation_source, envir = a)
+          function(v, widths) {
+            reach <- e$variant_bin_ratio_defaults()$max_site_distance + max(widths$intron_width, widths$exon_width)
+            q <- a$query_annotation(annotation_res, v$chrom[[1L]], max(1, v$pos1[[1L]] - reach), v$pos1[[1L]] + reach, build = v$build[[1L]])
+            e$variant_bin_ratio_candidates(q, v$chrom[[1L]], v$pos1[[1L]], widths$intron_width, widths$exon_width)
+          }
+        } else NULL
+        variant_batch_submit(e, res, lines, settings, identity, source_file, variant_source, jobs_source, root, frozen_controls,
+                             site_resolver = resolver)
       }, seed = TRUE)
     }) |> bslib::bind_task_button("batch_submit")
     batch_review <- reactiveVal(NULL)
@@ -426,7 +533,12 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       if (!resource_ok) stop(conditionMessage(resources))
       if (is.null(job_api)) stop("Persistent SCC jobs are not configured.")
       raw <- strsplit(if (is.null(input$batch_queries)) "" else input$batch_queries, "\n", fixed = TRUE)[[1L]]
-      rows <- data.frame(input_line = seq_along(raw), query = trimws(raw), stringsAsFactors = FALSE)
+      # Optional per-line "site=none" skips the splice-site bin ratio for that line.
+      tokens <- strsplit(trimws(raw), "[[:space:]]+")
+      site <- vapply(tokens, function(x) { hit <- grep("^site=", x, value = TRUE, ignore.case = TRUE)
+        if (length(hit)) sub("^site=", "", hit[[1L]], ignore.case = TRUE) else NA_character_ }, character(1))
+      query <- vapply(tokens, function(x) paste(x[!grepl("^site=", x, ignore.case = TRUE)], collapse = " "), character(1))
+      rows <- data.frame(input_line = seq_along(raw), query = trimws(query), site_spec = site, stringsAsFactors = FALSE)
       rows <- rows[nzchar(rows$query), , drop = FALSE]
       if (!nrow(rows)) stop("Enter at least one variant coordinate, one per line.")
       flank <- backend$int_scalar(input$flank, "Flank", 50, 124999)
@@ -435,6 +547,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
         max_intron = input$max_intron, strand_mode = input$strand_mode,
         exclude_duplicates = input$exclude_dup, nh1_only = input$nh1)
       settings <- backend$validate_config(settings); settings$flank <- flank
+      settings$bin_ratio_settings <- if (ratio_supported) bin_widths() else NULL
       frozen <- controls(); frozen$sampling_mode <- "all"; frozen$sample_cap <- NULL
       list(lines = rows, settings = settings, controls = frozen)
     }
@@ -496,7 +609,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
         batch_snapshot(snapshot)
         bslib::update_task_button("batch_submit", state = "busy", session = session)
         batch_task$invoke(resources, snapshot$lines, snapshot$settings, source_identity, snapshot$controls,
-          backend_file, variant_file, job_source, job_root)
+          backend_file, variant_file, job_source, job_root, annotation_resources, annotation_file)
         NULL
       }, error = function(e) conditionMessage(e))
       if (!is.null(problem)) {
@@ -864,6 +977,75 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
     output$groups <- DT::renderDT(display_groups(), rownames = FALSE, selection = "none",
       options = list(dom = "t", scrollX = TRUE, paging = FALSE))
     variant_result_tables_server(output, result)
+    bin_ratio_association <- reactive({
+      r <- result()
+      tryCatch({
+        if (!ratio_supported) stop("The splice-site bin ratio is unavailable in this backend.")
+        backend$variant_bin_ratio_association(r)
+      }, error = function(e) e)
+    })
+    bin_ratio_display <- function(a) {
+      floor <- attr(a, "gates")$p_display_floor
+      for (name in c("p_value", "q_value_bh", "p_genotype_3level")) a[[name]] <- backend$variant_format_p(a[[name]], floor)
+      a
+    }
+    output$bin_ratio_status <- renderUI({
+      a <- bin_ratio_association()
+      if (inherits(a, "error")) return(div(class = "alert alert-warning", conditionMessage(a)))
+      x <- attr(a, "settings")
+      if (isTRUE(x$disabled)) return(div(class = "alert alert-secondary",
+        "The splice-site bin ratio was not requested for this result (switched off, site=none, or GENCODE unavailable)."))
+      if (!nrow(a)) return(div(class = "alert alert-secondary", if (nzchar(paste(x$note, collapse = ""))) x$note else
+        "No GENCODE splice site lay within the search distance, so no bin ratio was computed."))
+      g <- attr(a, "gates")
+      div(class = "alert alert-info",
+        p(nrow(a), " GENCODE site(s); ", sum(a$status == "OK"), " tested (status OK). Bins: intron ", x$intron_width,
+          " bp, exon ", x$exon_width, " bp; counted reads: ", x$strand_rule, "."),
+        lapply(seq_len(nrow(a)), function(i) div(
+          tags$code(a$site_id[[i]]), ": ", tags$strong(a$status[[i]]), "; ", a$n[[i]], " of ", a$n_successful[[i]],
+          " successful samples analysed; ", a$n_below_min_exon[[i]], " had fewer than ", g$min_exon_reads,
+          " exon-bin reads (", a$n_both_zero[[i]], " with no reads in either bin).",
+          if (a$bin_check[[i]] != "OK") tags$span(class = "text-warning", " Bin check: ", a$bin_check[[i]], ".") else NULL)),
+        if (!identical(result_mode(), "all")) "Exploratory preview subset: p-values describe only the capped samples." else "")
+    })
+    output$bin_ratio_legend <- renderUI({
+      a <- bin_ratio_association()
+      req(!inherits(a, "error"), nrow(a) > 0L, !is.null(g <- attr(a, "gates")))
+      x <- attr(a, "settings")
+      item <- function(code, rule) tags$li(tags$code(code), " — ", rule)
+      div(class = "small",
+        p("Reads are the alignments retained for depth, junctions and the denominator (same MAPQ, flag, duplicate and NH filters). ",
+          "A read counts toward a bin when one of its aligned blocks (CIGAR M/=/X) overlaps the bin by at least 1 bp; intron skips (N) and deletions (D) do not count. ",
+          "The intron bin is ", x$intron_width, " bp starting at the intronic base next to the splice site; the exon bin is the adjacent ", x$exon_width,
+          " bp of exon. Strands: ", x$strand_rule, ". ratio = 1 − intron reads / exon reads; negative values are kept."),
+        p("ratio_mean_all_dosage0/1/2 average every successful sample with a usable dosage; samples with no reads in either bin are coded 0 and samples with intron reads only are NA. They are descriptive only. ",
+          "The model uses samples with at least ", g$min_exon_reads, " exon-bin reads; mean_ratio_dosage0/1/2 and mean_exon_count_dosage0/1/2 describe those samples."),
+        p("bin_check compares the bins with GENCODE v48: EXON_SHORTER_THAN_BIN or INTRON_SHORTER_THAN_BIN means the shortest bordering exon or intron in any transcript is shorter than the bin, so the bin reaches past it; EXON_NOT_ANNOTATED means no bordering exon was found."),
+        p(tags$strong("Status rules, in order (no p-value unless OK):")),
+        tags$ul(
+          item("TOO_FEW_SAMPLES", paste0("fewer than ", g$min_samples, " analysed samples.")),
+          item("SINGLE_DOSAGE", "all analysed samples have the same ALT dosage."),
+          item("LOW_MAC", paste0("mac < ", g$min_mac, ", or fewer than ", g$min_groups, " dosage groups with at least ",
+            g$min_group_samples, " analysed samples each.")),
+          item("CONSTANT_OUTCOME", "every analysed sample has the same ratio."),
+          item("PERFECT_FIT", paste0("residual sum of squares ≤ ", format(g$perfect_fit_rel_tol), " × total sum of squares.")),
+          item("OK", "fitted; not a significance call.")),
+        p("beta is the change in ratio per ALT allele (OLS, two-sided t test on n − 2 df). p_genotype_3level is a sensitivity F test with genotype as a factor (levels − 1 df) and is outside the BH family. q_value_bh adjusts the OK sites of this result, separately from the junction table."))
+    })
+    output$bin_ratio_table <- DT::renderDT({
+      a <- bin_ratio_association()
+      req(!inherits(a, "error"), nrow(a) > 0L)
+      DT::formatSignif(DT::datatable(bin_ratio_display(a), rownames = FALSE, selection = "none",
+        options = list(dom = "t", scrollX = TRUE, paging = FALSE)),
+        c("ratio_mean_all_dosage0", "ratio_mean_all_dosage1", "ratio_mean_all_dosage2",
+          "mean_exon_count_dosage0", "mean_exon_count_dosage1", "mean_exon_count_dosage2",
+          "mean_ratio_dosage0", "mean_ratio_dosage1", "mean_ratio_dosage2", "beta", "se", "t_value", "log10_p_value"), 4)
+    })
+    output$download_bin_ratio <- downloadHandler("genotype_association_splice_site_bin_ratio.csv", function(file) {
+      a <- bin_ratio_association()
+      if (inherits(a, "error")) stop(conditionMessage(a))
+      utils::write.csv(bin_ratio_display(a), file, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+    })
     association <- reactive({
       r <- result()
       tryCatch({
@@ -1029,7 +1211,7 @@ variant_server <- function(id, backend, resources, backend_file, variant_file,
       results_stale = results_stale, selected_record = selected_record,
       active_mode = active_mode, active_job = active_job, job_state = job_state,
       single_submit_task = single_submit_task, resume_task = resume_task, batch_task = batch_task, batch_outcomes = batch_outcomes,
-      job_dashboard = job_dashboard, association = association,
+      job_dashboard = job_dashboard, association = association, bin_ratio_association = bin_ratio_association,
       open_saved_job = open_saved_job, full_result = full_result))
   })
 }

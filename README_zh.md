@@ -45,6 +45,15 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 **Genotype association** 标签页对每个观测到的 intron 边界对运行 Model 1：以加性 ALT 剂量（仅双等位二倍体 genotype）对 `100 × exact junction reads / denominator reads` 做 OLS，不校正协变量或亲缘关系，p 值为名义值。样本的分母须 ≥ 20 reads。边界对须满足 `mac` ≥ 5 且至少 2 个剂量组各 ≥ 5 人（否则为 `LOW_MAC`），并且有 exact reads 的样本 ≥ 10、exact reads 总数 ≥ 20（否则为 `LOW_SUPPORT`）；其余状态为 `TOO_FEW_SAMPLES`、`SINGLE_DOSAGE`、`CONSTANT_OUTCOME` 和 `PERFECT_FIT`（残差平方和 ≤ 1e-10 × 总平方和）。只有 `OK` 行给出 p 值，BH q 值只在同一结果的 `OK` 行之间计算；`OK` 不代表显著，界面不设显著性阈值。低于 1e-300 的 p 值显示为 `< 1e-300`，并另列 `log10_p_value`。定义见 [Metric definitions](docs/METRICS.md#genotype-association-model-1)。
 
+同一标签页还对 **splice-site bin ratio** 运行 Model 1：`1 − intron reads / exon reads`，即剪接位点处内含子 bin 与相邻外显子 bin 的 reads 之比。
+
+- 变异 50 bp 以内的每个 GENCODE v48 donor/acceptor 位点都会计算，每个位点一行。BH 在这些位点之间校正，与 junction 表分开。
+- bin 的 reads 与深度、junction、分母使用同一批保留 reads。RF/FR 模式只计与位点同链的 reads；XS 模式不分链。
+- 内含子/外显子 bin 宽度（默认 25 bp）和每个样本的最少外显子 bin reads（默认 10）在第 2 步设置，并随作业冻结。bin 必须落在分析区间内。
+- 批量输入可在行尾加 `site=none`，跳过该行的 ratio。
+
+定义见 [Metric definitions](docs/METRICS.md#splice-site-bin-ratio)。
+
 全量比较作为独立 SCC 作业运行，关闭浏览器不会停止。回到相同的 prepared dataset，可在保存的作业列表中打开或恢复。原始 BAM/VCF 只读，不自动重建源索引。
 
 ## 每位成员的文件与权限

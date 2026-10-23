@@ -27,7 +27,59 @@ validate_config <- function(cfg) {
   cfg$exclude_duplicates <- isTRUE(cfg$exclude_duplicates)
   cfg$nh1_only <- isTRUE(cfg$nh1_only)
   cfg$demo <- isTRUE(cfg$demo)
+  cfg$bin_ratio <- validate_bin_ratio(cfg$bin_ratio, cfg)
   cfg
+}
+
+# Splice-site bin ratio settings frozen in cfg (NULL = not requested). Every
+# bin must lie inside the analysis interval, so it is counted from exactly the
+# reads retained for depth, junctions and the denominator.
+validate_bin_ratio <- function(x, cfg) {
+  if (is.null(x)) return(NULL)
+  if (!is.list(x)) stop("Splice-site bin ratio settings are malformed.")
+  x$intron_width <- int_scalar(x$intron_width, "Intron bin width", 1, 1000)
+  x$exon_width <- int_scalar(x$exon_width, "Exon bin width", 1, 1000)
+  x$min_exon_reads <- int_scalar(x$min_exon_reads, "Minimum exon-bin reads", 1, 1e6)
+  s <- x$sites
+  need <- c("site_id", "strand", "intron_start1", "intron_end1", "exon_start1", "exon_end1")
+  if (!is.data.frame(s) || !all(need %in% names(s))) stop("Splice-site bins are malformed.")
+  if (nrow(s)) {
+    if (anyDuplicated(s$site_id) || !all(s$strand %in% c("+", "-")) ||
+        any(s$intron_end1 - s$intron_start1 + 1L != x$intron_width) ||
+        any(s$exon_end1 - s$exon_start1 + 1L != x$exon_width))
+      stop("Splice-site bins do not match the frozen bin widths.")
+    lo <- min(s$intron_start1, s$exon_start1); hi <- max(s$intron_end1, s$exon_end1)
+    if (lo < cfg$start1 || hi > cfg$end1)
+      stop("Splice-site bins span ", lo, "-", hi, ", outside the analysis interval ", cfg$start1, "-", cfg$end1,
+           ". Increase the flank so every bin lies inside the interval.", call. = FALSE)
+  }
+  x
+}
+
+# Reads per splice-site bin, from retained reads only. A read counts toward a
+# bin when one of its M/=/X blocks overlaps the bin by at least 1 bp: N (intron
+# skips) and D never count, and I/S add no reference bases. RF/FR: only reads
+# inferred on the site's strand count ('?' never does). XS: all strands,
+# because XS tags exist only on spliced reads.
+count_bin_reads <- function(blocks, strand, sites, strand_mode) {
+  n <- length(blocks)
+  if (length(strand) != n) stop("Read blocks and strands differ in length.")
+  rows <- vapply(blocks, nrow, integer(1))
+  flat <- if (n && sum(rows)) do.call(rbind, blocks) else matrix(integer(), ncol = 2L)
+  read <- rep.int(seq_len(n), rows)
+  hits <- function(a1, b1, eligible) {
+    r <- unique(read[flat[, 1L] < b1 & flat[, 2L] > a1 - 1L])
+    sum(eligible[r])
+  }
+  out <- lapply(seq_len(nrow(sites)), function(i) {
+    eligible <- if (identical(strand_mode, "XS")) rep(TRUE, n) else strand == sites$strand[[i]]
+    data.frame(site_id = sites$site_id[[i]],
+               intron_count = hits(sites$intron_start1[[i]], sites$intron_end1[[i]], eligible),
+               exon_count = hits(sites$exon_start1[[i]], sites$exon_end1[[i]], eligible),
+               stringsAsFactors = FALSE)
+  })
+  if (length(out)) do.call(rbind, out) else
+    data.frame(site_id = character(), intron_count = integer(), exon_count = integer())
 }
 
 
@@ -141,6 +193,7 @@ parse_sam_records <- function(lines, cfg) {
   })
   ev <- Filter(Negate(is.null), ev)
   list(reads = reads[keep, , drop = FALSE],
+       blocks = lapply(parsed[keep], `[[`, "blocks"),
        events = if (length(ev)) do.call(rbind, ev) else empty_events(),
        keep = keep, span_only_excluded = sum(!overlap),
        missing_nh = sum(is.na(reads$nh)))
@@ -332,6 +385,8 @@ analyze_bam <- function(cfg) {
   if (any(observed_counts != j$score))
     stop("Audit failed: read-level CIGAR counts differ from native RegTools scores. Check tool versions, strandedness and unusual CIGAR strings. Unverified metrics are not reported.")
   e$intron_start1 <- e$intron_start0 + 1L; e$intron_end1 <- e$intron_end0
+  bin_counts <- if (!is.null(cfg$bin_ratio) && nrow(cfg$bin_ratio$sites))
+    count_bin_reads(parsed$blocks, parsed$reads$strand, cfg$bin_ratio$sites, cfg$strand_mode) else NULL
   depth_path <- file.path(work, "depth.tsv")
   # Input is already filtered. Re-include DUP to respect the user's duplicate choice.
   # No -s: overlapping paired ends are two reads; no -J: D is not covered sequence.
@@ -357,6 +412,7 @@ analyze_bam <- function(cfg) {
     stop("The BAM size or modification time changed during analysis. Retry after the file is stable.")
   cfg$bam <- if (cfg$demo) "synthetic_demo" else bam
   list(config = cfg, reads = parsed$reads, events = e, junctions = j, depth = depth, rna_bases = rna_bases,
+       bin_counts = bin_counts,
        native_audit_passed = TRUE, candidate_alignments = fetched_count,
        span_only_excluded = parsed$span_only_excluded,
        warnings = unique(warnings), log = logs,

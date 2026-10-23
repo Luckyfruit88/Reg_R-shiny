@@ -25,7 +25,7 @@ Rscript tests/run_tests.R --unit --require-clean   # as run in CI: worktree must
 
 Use `--require-clean` from a clean checkout for release acceptance. Without it, local changes are allowed and only reported as unaltered. A git query that fails is reported as unverified and fails the run. Full per-suite logs are kept in the ignored `test-artifacts/test-runs/<run>/` directory; the terminal shows a summary and the tail of each failing log.
 
-The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
+The native suites generate their own small BAM/VCF fixtures and exercise the same tools used by the application. The UI suites check immutable source switching, asynchronous stale-result suppression, failure retention, matched counts and plotting semantics. Splice-site bin counts are checked from one synthetic CIGAR/strand fixture (`tests/fixtures/bin_ratio_reads.json`) by both `tests/test_variants.R` and the independent `tests/oracle_bin_ratio.py`. A single suite can still be run directly, for example `Rscript tests/test_variants.R --unit`; the suite list and per-suite flags are in `tests/run_tests.R`.
 
 Generated fixtures stay in temporary directories. Do not run uncontrolled full-cohort analyses on a login node.
 

@@ -30,7 +30,9 @@ suites <- list(
   suite("tests/test_single_bam_ui.R", unit = NULL, full = character()),
   suite("tests/test_run_tests.R"),
   # Independent arithmetic oracle for the synthetic Single BAM fixture.
-  suite("tests/oracle.py")
+  suite("tests/oracle.py"),
+  # Independent arithmetic oracle for splice-site bin counts (shared JSON fixture).
+  suite("tests/oracle_bin_ratio.py")
 )
 
 # Worktree snapshot: git status entries plus the content hash of every listed

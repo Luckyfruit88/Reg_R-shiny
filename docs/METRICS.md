@@ -35,7 +35,7 @@ Target, tolerance and display-window changes reuse loaded results. Filters and a
 
 Outputs: junction_metrics.csv, junctions.csv, depth.tsv, junction_read_evidence.csv and parameters_and_audit.json. Evidence omits SEQ and QUAL but can contain QNAMEs, sample names and private paths. Keep it within the authorized research environment.
 
-Index timestamps are warning signals only. Successful regional queries do not validate the entire index or BAM. No-junction results do not establish absence of splicing. CRAM, formal PSI, UMI counts and strand-specific denominators are not implemented. GENCODE v48 is an independent reference overlay. Genotype comparison is descriptive; the Model 1 association below is an unadjusted screening test, not a formal differential-splicing analysis.
+Index timestamps are warning signals only. Successful regional queries do not validate the entire index or BAM. No-junction results do not establish absence of splicing. CRAM, formal PSI, UMI counts and strand-specific denominators are not implemented. GENCODE v48 is an independent reference overlay. Genotype comparison is descriptive; the Model 1 associations below are unadjusted screening tests, not a formal differential-splicing analysis.
 
 ## Genotype comparison
 
@@ -82,6 +82,26 @@ Rows with any status other than `OK` keep their descriptive columns, have no se,
 Columns: `n` and `n_dosage0/1/2` count analysed samples; `mac`, `n_nonzero` and `total_exact_reads` are the gate quantities; `mean_denominator_dosage0/1/2` are mean denominator reads per dosage; `mean_rate_dosage0/1/2` are unweighted means of per-sample rates; `beta` is the rate change per ALT allele (exact reads per 100 denominator reads), with its standard error, t and the two-sided p-value on n − 2 degrees of freedom. The p-value is computed on the log scale and also reported as `log10_p_value`; p- and q-values below 1e-300 are shown and exported as `< 1e-300`, never as 0.
 
 The model is unadjusted: no age, sex, RNA batch, genetic PCs or relatedness. FHS participants are related, so p-values are nominal and may be anti-conservative. In preview mode the test describes only the capped subset. Results saved before `sample_junctions` existed must be rerun.
+
+## Splice-site bin ratio
+
+For each annotated splice site near the variant, the bin ratio compares reads in a short intron bin starting at the site with reads in the adjacent exon bin: `ratio = 1 − intron reads / exon reads`. It is computed per sample and tested by Model 1 alongside the junction rows.
+
+**Sites.** Every distinct GENCODE v48 donor and acceptor within 50 bp of the variant is computed, one row per site. Sites are listed before the job runs and frozen with it; they are not chosen manually. The site position `b` is the intronic base next to the splice site: the intron start for a plus-strand donor or a minus-strand acceptor, otherwise the intron end. Without GENCODE, no site is listed and the ratio is not computed. In batch input, a line ending in `site=none` skips the ratio.
+
+**Bins.** For a plus-strand donor or minus-strand acceptor, the intron bin is `[b, b + w_intron − 1]` and the exon bin `[b − w_exon, b − 1]`; otherwise the intron bin is `[b − w_intron + 1, b]` and the exon bin `[b + 1, b + w_exon]`. Both widths are settable from 1 to 1000 bp (default 25). Every bin must lie inside the analysis interval; otherwise the comparison is not submitted and the message gives the flank needed. `bin_check` compares the bins with GENCODE: `EXON_SHORTER_THAN_BIN` / `INTRON_SHORTER_THAN_BIN` mean the shortest bordering exon or intron in any transcript is shorter than the bin, so the bin reaches past that feature; `EXON_NOT_ANNOTATED` means no bordering exon was found. The check is reported; it does not change the model.
+
+**Reads and counting.** Bin reads come from `analyze_bam()` and are exactly the retained alignments used for depth, junctions and the denominator: the same MAPQ, flag, duplicate and NH filters, primary alignment records with paired ends counted separately. A read counts toward a bin when one of its aligned blocks (CIGAR `M`, `=`, `X`) overlaps the bin by at least 1 bp. Intron skips (`N`) and deletions (`D`) never count, and insertions and soft clips add no reference bases. A read may count toward both bins.
+
+**Strand.** In RF and FR mode, only reads whose RegTools flag-based strand equals the site strand count; reads with unknown strand (`?`) never count. In XS mode, reads of all strands count, because XS tags exist only on spliced reads; the tab states this.
+
+**Per-sample value.** `ratio = 1 − intron reads / exon reads` when exon reads > 0 (negative values are kept); 0 when both bins have no reads; NA when the exon bin has no reads and the intron bin has some.
+
+**Model 1 (bin ratio).** OLS of `ratio ~ dosage` per site over successful samples with a biallelic diploid ALT dosage and at least `min_exon_reads` exon-bin reads (settable, default 10). Samples below the threshold, including samples with no reads in either bin, are excluded from the model and counted. Statuses, in order: `TOO_FEW_SAMPLES` (< 3 analysed), `SINGLE_DOSAGE`, `LOW_MAC` (mac < 5 or fewer than 2 dosage groups with ≥ 5 analysed samples), `CONSTANT_OUTCOME`, `PERFECT_FIT` (RSS ≤ 1e-10 × TSS), `OK`. Only `OK` rows get se, t, p and q. `q_value_bh` adjusts the `OK` sites of one result, separately from the junction table. `p_genotype_3level` is a sensitivity F test with genotype as a factor (levels − 1 df) and is outside the BH family.
+
+**Columns.** `ratio_mean_all_dosage0/1/2` average every successful sample with a usable dosage, coding samples with no reads in either bin as 0 and excluding exon-zero/intron-positive samples (NA); they are descriptive only. `n_successful`, `n_both_zero`, `n_exon_zero_intron_positive` and `n_below_min_exon` account for every successful sample. `n`, `n_dosage0/1/2` and `mac` describe the analysed samples; `mean_exon_count_dosage0/1/2` and `mean_ratio_dosage0/1/2` are their unweighted means. `adjacent_exon_min_bp` and `intron_min_bp` are the GENCODE lengths behind `bin_check`. `beta` is the change in ratio per ALT allele. The model is unadjusted and p-values are nominal, as for the junction model.
+
+**Frozen settings.** Bin widths, the exon-read threshold, the site list and the strand rule are stored in the job configuration (and therefore its fingerprint) and in the result provenance. Results saved before this feature must be rerun to show the bin ratio.
 
 ## GENCODE v48 overlay semantics
 

@@ -1,0 +1,30 @@
+{
+  "comment": "Synthetic splice-site bin fixture shared by tests/test_variants.R and tests/oracle_bin_ratio.py. Expected counts are hand-derived; both implementations must reproduce them independently.",
+  "chrom": "chrS",
+  "interval": [900, 1100],
+  "sites": [
+    {"type": "donor", "strand": "+", "position": 1001},
+    {"type": "donor", "strand": "-", "position": 1050}
+  ],
+  "reads": [
+    {"name": "r01_exon_only",          "flag": 163, "pos1": 951,  "cigar": "40M",          "tags": ["NH:i:1"]},
+    {"name": "r02_spans_both",         "flag": 99,  "pos1": 991,  "cigar": "30M",          "tags": ["NH:i:1"]},
+    {"name": "r03_N_skips_intron_bin", "flag": 83,  "pos1": 981,  "cigar": "20M500N30M",   "tags": ["XS:A:+", "NH:i:1"]},
+    {"name": "r04_D_over_intron_bin",  "flag": 163, "pos1": 991,  "cigar": "10M30D10M",    "tags": ["NH:i:1"]},
+    {"name": "r05_softclip_insertion", "flag": 147, "pos1": 1001, "cigar": "10S5M3I5M",    "tags": ["NH:i:1"]},
+    {"name": "r06_ends_before_exon",   "flag": 163, "pos1": 951,  "cigar": "25M",          "tags": ["NH:i:1"]},
+    {"name": "r07_touches_exon_start", "flag": 163, "pos1": 952,  "cigar": "25M",          "tags": ["NH:i:1"]},
+    {"name": "r08_touches_intron_end", "flag": 99,  "pos1": 1025, "cigar": "20M",          "tags": ["NH:i:1"]},
+    {"name": "r09_after_intron_bin",   "flag": 163, "pos1": 1026, "cigar": "20M",          "tags": ["NH:i:1"]},
+    {"name": "r10_outside_interval",   "flag": 163, "pos1": 1200, "cigar": "20M",          "tags": ["NH:i:1"]},
+    {"name": "r11_unknown_strand",     "flag": 65,  "pos1": 991,  "cigar": "30M",          "tags": ["NH:i:1"]},
+    {"name": "r12_multimapped_nh2",    "flag": 163, "pos1": 991,  "cigar": "30M",          "tags": ["NH:i:2"]}
+  ],
+  "cases": [
+    {"strand_mode": "XS", "nh1_only": false, "intron_width": 25, "exon_width": 25, "expected": [[5, 7], [3, 0]]},
+    {"strand_mode": "RF", "nh1_only": false, "intron_width": 25, "exon_width": 25, "expected": [[1, 5], [1, 0]]},
+    {"strand_mode": "FR", "nh1_only": false, "intron_width": 25, "exon_width": 25, "expected": [[3, 1], [2, 0]]},
+    {"strand_mode": "XS", "nh1_only": true,  "intron_width": 25, "exon_width": 25, "expected": [[4, 6], [3, 0]]},
+    {"strand_mode": "XS", "nh1_only": false, "intron_width": 10, "exon_width": 40, "expected": [[4, 8], [2, 0]]}
+  ]
+}
