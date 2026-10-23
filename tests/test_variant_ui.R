@@ -391,42 +391,52 @@ shiny::testServer(variant_server, args = review_args, {
   session$setInputs(batch_confirm = 1)
   stopifnot(is.null(isolate(batch_review())), batch_memory$counter == before)
 })
-# Legacy splice-site ratio: batch site= parsing, site resolution rules, and the
-# ratio panel for a result that carries ratio counts.
+# Splice-site bin ratio: batch site=none parsing, per-line resolution rules,
+# and the ratio panel for a result that carries bin counts.
 shiny::testServer(variant_server, args = review_args, {
   review_enabled(TRUE)
   session$setInputs(flank = 50, mapq = 20, baseq = 0, anchor = 8,
     min_intron = 70, max_intron = 500000, strand_mode = "XS", exclude_dup = FALSE, nh1 = FALSE,
-    sampling_mode = "all", batch_queries = "chr1:200 site=donor:+:150\nchr1:100:A:T SITE=none\nchr1:300")
+    sampling_mode = "all", batch_queries = "chr1:200 site=none\nchr1:100:A:T SITE=None\nchr1:300")
   session$setInputs(batch_submit = 1)
   lines <- isolate(batch_review())$lines
   stopifnot(identical(lines$query, c("chr1:200", "chr1:100:A:T", "chr1:300")),
-            identical(lines$site_spec, c("donor:+:150", "none", NA_character_)))
+            identical(lines$site_spec, c("none", "None", NA_character_)))
 })
 ratio_api <- new.env(parent = globalenv())
 sys.source(backend_file, envir = ratio_api); sys.source(normalizePath("src/variant_backend.R"), envir = ratio_api)
 v <- data.frame(chrom = "chr1", pos1 = 1010L)
-introns <- data.frame(transcript_id = c("T1", "T2"), chrom = "chr1", strand = c("+", "-"),
-  intron_start1 = c(1000, 1030), intron_end1 = c(2000, 3000), donor1 = c(1000, 3000), acceptor1 = c(2000, 1030))
-one <- function(v) ratio_api$variant_ratio_site_candidates(introns[1, ], "chr1", v$pos1)
-two <- function(v) ratio_api$variant_ratio_site_candidates(introns, "chr1", v$pos1)
-none <- function(v) ratio_api$variant_ratio_site_candidates(introns[0, ], "chr1", v$pos1)
-stopifnot(nrow(variant_batch_ratio_site(ratio_api, v, "none", two)$sites) == 0L,
-  variant_batch_ratio_site(ratio_api, v, "acceptor:-:1030", two)$sites$site_id == "acceptor:-:chr1:1030",
-  variant_batch_ratio_site(ratio_api, v, NA_character_, one)$sites$site_id == "donor:+:chr1:1000",
-  nrow(variant_batch_ratio_site(ratio_api, v, NA_character_, none)$sites) == 0L,
-  grepl("GENCODE unavailable", variant_batch_ratio_site(ratio_api, v, NA_character_, NULL)$label, fixed = TRUE))
-ambiguous <- tryCatch(variant_batch_ratio_site(ratio_api, v, NA_character_, two), error = function(e) conditionMessage(e))
-stopifnot(grepl("2 annotated splice sites within 50 bp (donor:+:1000; acceptor:-:1030)", ambiguous, fixed = TRUE),
-          grepl("site=none", ambiguous, fixed = TRUE))
+bcfg <- ratio_api$validate_config(list(chrom = "chr1", start1 = 900L, end1 = 1100L, mapq = 20, baseq = 0, anchor = 8,
+  min_intron = 70, max_intron = 500000, strand_mode = "XS"))
+widths <- list(intron_width = 25L, exon_width = 25L, min_exon_reads = 10L)
+ann <- list(introns = data.frame(transcript_id = c("T1", "T2"), chrom = "chr1", strand = c("+", "-"),
+  intron_start1 = c(1000, 1030), intron_end1 = c(2000, 3000), donor1 = c(1000, 3000), acceptor1 = c(2000, 1030)),
+  exons = data.frame(transcript_id = character(), chrom = character(), start1 = integer(), end1 = integer()))
+both <- function(v, w) ratio_api$variant_bin_ratio_candidates(ann, "chr1", v$pos1, w$intron_width, w$exon_width)
+none <- function(v, w) ratio_api$variant_bin_ratio_candidates(list(introns = ann$introns[0, ]), "chr1", v$pos1)
+rejected <- function(expr) tryCatch({ force(expr); NULL }, error = function(e) e)
+x <- variant_batch_bin_ratio(ratio_api, v, NA_character_, both, bcfg, widths)
+stopifnot(identical(x$bin_ratio$sites$site_id, c("donor:+:chr1:1000", "acceptor:-:chr1:1030")),
+  grepl("2 GENCODE site(s)", x$label, fixed = TRUE),
+  is.null(variant_batch_bin_ratio(ratio_api, v, "none", both, bcfg, widths)$bin_ratio),
+  is.null(variant_batch_bin_ratio(ratio_api, v, NA_character_, both, bcfg, NULL)$bin_ratio),
+  grepl("GENCODE unavailable", variant_batch_bin_ratio(ratio_api, v, NA_character_, NULL, bcfg, widths)$label, fixed = TRUE),
+  nrow(variant_batch_bin_ratio(ratio_api, v, NA_character_, none, bcfg, widths)$bin_ratio$sites) == 0L)
+e <- rejected(variant_batch_bin_ratio(ratio_api, v, "donor:+:150", both, bcfg, widths))
+stopifnot(identical(e$status, "BIN_RATIO_REJECTED"), grepl("Only site=none", conditionMessage(e), fixed = TRUE))
+e <- rejected(variant_batch_bin_ratio(ratio_api, v, NA_character_, both, bcfg, list(intron_width = 25L, exon_width = 200L, min_exon_reads = 10L)))
+stopifnot(identical(e$status, "BIN_RATIO_REJECTED"), grepl("Set the flank to at least 210 bp", conditionMessage(e), fixed = TRUE))
 ratio_fixture_file <- tempfile("regshiny-ratio-fixture-", fileext = ".R")
 writeLines(c(readLines(fixture_file),
   'base_analyze <- analyze_variant',
   'analyze_variant <- function(resources, variant, cfg, max_per_group = 3L, sampling_mode = "all") {',
   '  r <- base_analyze(resources, variant, cfg, max_per_group, sampling_mode)',
-  '  r$ratio_sites <- data.frame(site_id = "donor:+:chr1:150", chrom = "chr1", splice_site_position = 150L, strand = "+",',
-  '    splice_site_type = "donor", intron_start1 = 150L, intron_end1 = 174L, exon_start1 = 125L, exon_end1 = 149L, source = "manual")',
-  '  r$ratio_counts <- data.frame(vcf_sample = "s1", genotype = "0/1", site_id = "donor:+:chr1:150", intron_count = 2, exon_count = 20, empty_extraction = FALSE)',
+  '  sites <- data.frame(site_id = "donor:+:chr1:150", chrom = "chr1", splice_site_position = 150L, strand = "+",',
+  '    splice_site_type = "donor", intron_start1 = 150L, intron_end1 = 174L, exon_start1 = 125L, exon_end1 = 149L,',
+  '    distance = 50L, transcripts = 1L, adjacent_exon_min_bp = 12L, intron_min_bp = 300L)',
+  '  r$bin_ratio <- list(intron_width = 25L, exon_width = 25L, min_exon_reads = 10L, sites = sites,',
+  '    strand_rule = "all strands (XS mode)", note = "")',
+  '  r$bin_ratio_counts <- data.frame(vcf_sample = "s1", genotype = "0/1", site_id = "donor:+:chr1:150", intron_count = 2L, exon_count = 20L)',
   '  r',
   '}'), ratio_fixture_file)
 ratio_backend <- new.env(parent = globalenv())
@@ -436,18 +446,25 @@ shiny::testServer(variant_server,
     backend_file = backend_file, variant_file = ratio_fixture_file, splice_file = splice_file), {
     session$setInputs(query = "chr1:200", record = "", sampling_mode = "preview", flank = 50, sample_cap = 3,
       mapq = 20, baseq = 0, anchor = 8, min_intron = 70, max_intron = 500000,
-      strand_mode = "XS", exclude_dup = FALSE, nh1 = FALSE, lookup = 1)
+      strand_mode = "XS", exclude_dup = FALSE, nh1 = FALSE, bin_ratio = TRUE, intron_bin = 25, exon_bin = 25,
+      min_exon_reads = 10, lookup = 1)
     await_task(lookup_task, session)
-    session$setInputs(record = "1", ratio_site = "manual", ratio_site_manual = "donor:+:150", run = 1)
+    session$setInputs(record = "1", run = 1)
     await_task(analysis_task, session)
     stopifnot(isolate(analysis_task$status()) == "success")
-    a <- isolate(ratio_association())
-    stopifnot(nrow(a) == 1L, a$status == "TOO_FEW_SAMPLES", a$ratio_mean_legacy_dosage1 == 0.9)
-    stopifnot(grepl("donor:+:chr1:150", html_text(output$ratio_status), fixed = TRUE),
-              grepl("TOO_FEW_SAMPLES", html_text(output$ratio_status), fixed = TRUE),
-              grepl("ratio = 1 − intron_count / exon_count", html_text(output$ratio_legend), fixed = TRUE),
-              grepl("featureCounts -p -O -f -s 2 -C -B --primary -T 1", html_text(output$ratio_legend), fixed = TRUE),
-              grepl("GENCODE annotation is unavailable", html_text(output$ratio_site_ui), fixed = TRUE))
+    a <- isolate(bin_ratio_association())
+    stopifnot(nrow(a) == 1L, a$status == "TOO_FEW_SAMPLES", a$ratio_mean_all_dosage1 == 0.9,
+              a$bin_check == "EXON_SHORTER_THAN_BIN")
+    status <- html_text(output$bin_ratio_status); legend <- html_text(output$bin_ratio_legend)
+    stopifnot(grepl("donor:+:chr1:150", status, fixed = TRUE), grepl("TOO_FEW_SAMPLES", status, fixed = TRUE),
+              grepl("Bin check: EXON_SHORTER_THAN_BIN", status, fixed = TRUE),
+              grepl("same MAPQ, flag, duplicate and NH filters", legend, fixed = TRUE),
+              grepl("ratio = 1 − intron reads / exon reads", legend, fixed = TRUE),
+              !grepl("legacy|featureCounts", paste(status, legend), ignore.case = TRUE),
+              grepl("GENCODE annotation is unavailable", html_text(output$bin_sites_ui), fixed = TRUE),
+              grepl("XS mode: reads of all strands", html_text(output$bin_sites_ui), fixed = TRUE))
+    session$setInputs(bin_ratio = FALSE)
+    stopifnot(grepl("Not computed", html_text(output$bin_sites_ui), fixed = TRUE))
   })
 unlink(ratio_fixture_file)
 unlink(c(fixture_file, job_fixture_file, batch_variant_file))

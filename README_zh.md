@@ -20,7 +20,7 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
    run_reg_shiny()
    ```
 
-   也可以打开 `app.R` 后点击 **Run App**。启动器会把缺失的 SCC 原生工具路径载入当前 R 会话，使用 `samtools/1.23 regtools/1.0.0 bcftools/1.23 subread/2.0.3`。R 4.5.2 的共享库已提供所需 R 包；其他环境缺包时可执行 `source("scripts/install_dependencies.R")`，仅安装到个人 R library。
+   也可以打开 `app.R` 后点击 **Run App**。启动器会把缺失的 SCC 原生工具路径载入当前 R 会话，使用 `samtools/1.23 regtools/1.0.0 bcftools/1.23`。R 4.5.2 的共享库已提供所需 R 包；其他环境缺包时可执行 `source("scripts/install_dependencies.R")`，仅安装到个人 R library。
 
 首次启动会在 **Data sources** 自动准备 FHS：从原始对应表建立本用户的 VCF/BAM 清单，并建立 GENCODE v48 区域索引；界面显示当前阶段。准备完成后进入 WGS 页面，后续复用经过身份校验的本地缓存。无需复制 Jinjie 的配置、索引、作业目录或会话链接，也无需额外设置 `R_ENVIRON_USER`。
 
@@ -45,14 +45,14 @@ Reg_Shiny 用 DNA VCF 的 genotype 分组，对照匹配 RNA-seq BAM 的 depth�
 
 **Genotype association** 标签页对每个观测到的 intron 边界对运行 Model 1：以加性 ALT 剂量（仅双等位二倍体 genotype）对 `100 × exact junction reads / denominator reads` 做 OLS，不校正协变量或亲缘关系，p 值为名义值。样本的分母须 ≥ 20 reads。边界对须满足 `mac` ≥ 5 且至少 2 个剂量组各 ≥ 5 人（否则为 `LOW_MAC`），并且有 exact reads 的样本 ≥ 10、exact reads 总数 ≥ 20（否则为 `LOW_SUPPORT`）；其余状态为 `TOO_FEW_SAMPLES`、`SINGLE_DOSAGE`、`CONSTANT_OUTCOME` 和 `PERFECT_FIT`（残差平方和 ≤ 1e-10 × 总平方和）。只有 `OK` 行给出 p 值，BH q 值只在同一结果的 `OK` 行之间计算；`OK` 不代表显著，界面不设显著性阈值。低于 1e-300 的 p 值显示为 `< 1e-300`，并另列 `log10_p_value`。定义见 [Metric definitions](docs/METRICS.md#genotype-association-model-1)。
 
-同一标签页还对 legacy splice-site ratio 运行 Model 1。定义是 `1 − intron_count / exon_count`：在剪接位点两侧固定的 25 bp 内含子 bin 和外显子 bin 中，用 featureCounts（`subread/2.0.3`）按 legacy 读段过滤条件计数。
+同一标签页还对 **splice-site bin ratio** 运行 Model 1：`1 − intron reads / exon reads`，即剪接位点处内含子 bin 与相邻外显子 bin 的 reads 之比。
 
-- 在第 2 步选择剪接位点。界面会列出变异 50 bp 以内的 GENCODE v48 位点；只有一个候选时自动选中；也可以手动输入 `type:strand:position`。
-- 样本的外显子 bin reads 须 ≥ 10 才进入模型。
-- legacy 的组均值一并列出，便于和旧 TSV 对账。
-- 批量输入可在行尾加 `site=donor:+:36994347` 或 `site=none`。有多个候选位点且未写 `site=` 的行不会提交。
+- 变异 50 bp 以内的每个 GENCODE v48 donor/acceptor 位点都会计算，每个位点一行。BH 在这些位点之间校正，与 junction 表分开。
+- bin 的 reads 与深度、junction、分母使用同一批保留 reads。RF/FR 模式只计与位点同链的 reads；XS 模式不分链。
+- 内含子/外显子 bin 宽度（默认 25 bp）和每个样本的最少外显子 bin reads（默认 10）在第 2 步设置，并随作业冻结。bin 必须落在分析区间内。
+- 批量输入可在行尾加 `site=none`，跳过该行的 ratio。
 
-定义见 [Metric definitions](docs/METRICS.md#splice-site-ratio-legacy-definition)。
+定义见 [Metric definitions](docs/METRICS.md#splice-site-bin-ratio)。
 
 全量比较作为独立 SCC 作业运行，关闭浏览器不会停止。回到相同的 prepared dataset，可在保存的作业列表中打开或恢复。原始 BAM/VCF 只读，不自动重建源索引。
 

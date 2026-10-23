@@ -391,7 +391,7 @@ submit_variant_job <- function(resources, variant, cfg, backend_file, variant_fi
     'run_variant_job(job_dir)')
   writeLines(entry, file.path(job_dir, "worker.R")); Sys.chmod(file.path(job_dir, "worker.R"), "0400")
   script <- c("#!/bin/bash -l", "set -euo pipefail", "umask 077",
-    "module load R/4.5.2 samtools/1.23 regtools/1.0.0 bcftools/1.23 subread/2.0.3",
+    "module load R/4.5.2 samtools/1.23 regtools/1.0.0 bcftools/1.23",
     "export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1",
     paste0("export REGSHINY_JOB_ROOT=", shQuote(normalizePath(job_root))),
     paste("exec Rscript --vanilla", shQuote(file.path(job_dir, "worker.R")), shQuote(job_dir)))
